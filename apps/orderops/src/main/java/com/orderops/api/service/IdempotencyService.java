@@ -80,6 +80,22 @@ public class IdempotencyService {
         log.info("Stored idempotency record key={} orderId={}", idempotencyKey, response.getOrderId());
     }
 
+    /**
+     * Writes only the Redis cache entry after the DynamoDB idempotency record has
+     * already been persisted inside a TransactWriteItems call.
+     */
+    public void cacheResponseInRedis(String idempotencyKey, String requestHash, CreateOrderResponse response) {
+        IdempotencyRecord record = IdempotencyRecord.builder()
+            .idempotencyKey(idempotencyKey)
+            .requestHash(requestHash)
+            .orderId(response.getOrderId())
+            .orderStatus(response.getStatus())
+            .createdAt(response.getCreatedAt())
+            .build();
+        safeRedisSet(idempotencyKey, toJson(record));
+        log.info("Cached idempotency record in Redis key={} orderId={}", idempotencyKey, response.getOrderId());
+    }
+
     /** Computes SHA-256 of the canonical JSON representation of the request. */
     public String computeRequestHash(CreateOrderRequest request) {
         try {

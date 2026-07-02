@@ -79,8 +79,31 @@ public class InventoryRepository {
     }
 
     /**
+     * Returns a TransactWriteItem for use in a transactWriteItems call.
+     * Applies the same conditional reserve logic as {@link #reserveInventory}.
+     */
+    public TransactWriteItem buildReserveTransactItem(String itemId, int quantity) {
+        return TransactWriteItem.builder()
+            .update(Update.builder()
+                .tableName(tableName)
+                .key(Map.of("itemId", AttributeValue.fromS(itemId)))
+                .updateExpression(
+                    "SET availableQuantity = availableQuantity - :qty, " +
+                    "    reservedQuantity  = reservedQuantity  + :qty, " +
+                    "    #ver              = #ver              + :one")
+                .conditionExpression("availableQuantity >= :qty")
+                .expressionAttributeNames(Map.of("#ver", "version"))
+                .expressionAttributeValues(Map.of(
+                    ":qty", AttributeValue.fromN(String.valueOf(quantity)),
+                    ":one", AttributeValue.fromN("1")
+                ))
+                .build())
+            .build();
+    }
+
+    /**
      * Releases a previously reserved quantity back to available.
-     * Used for rollback when a multi-item order partially fails.
+     * Retained for direct use in non-transactional contexts.
      */
     public void releaseInventory(String itemId, int quantity) {
         dynamoDb.updateItem(UpdateItemRequest.builder()

@@ -34,6 +34,23 @@ public class IdempotencyRepository {
             .build());
     }
 
+    /** Returns a TransactWriteItem for use in a transactWriteItems call. */
+    public TransactWriteItem buildSaveTransactItem(IdempotencyRecord record) {
+        return TransactWriteItem.builder()
+            .put(Put.builder()
+                .tableName(tableName)
+                .item(Map.of(
+                    "idempotencyKey", AttributeValue.fromS(record.getIdempotencyKey()),
+                    "requestHash",    AttributeValue.fromS(record.getRequestHash()),
+                    "orderId",        AttributeValue.fromS(record.getOrderId()),
+                    "orderStatus",    AttributeValue.fromS(record.getOrderStatus()),
+                    "createdAt",      AttributeValue.fromS(record.getCreatedAt())
+                ))
+                .conditionExpression("attribute_not_exists(idempotencyKey)")
+                .build())
+            .build();
+    }
+
     public Optional<IdempotencyRecord> findByKey(String idempotencyKey) {
         var resp = dynamoDb.getItem(GetItemRequest.builder()
             .tableName(tableName)

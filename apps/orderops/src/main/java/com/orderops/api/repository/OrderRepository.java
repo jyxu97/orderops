@@ -69,11 +69,13 @@ public class OrderRepository {
         }
     }
 
-    // Used by TransactWriteItems — returns the Put object for embedding in a transaction
+    // Used by TransactWriteItems — returns the Put object for embedding in a transaction.
+    // The condition prevents duplicate order IDs (defense-in-depth; UUIDs are unique in practice).
     public Put toPutForTransaction(Order order) {
         return Put.builder()
             .tableName(tableName)
             .item(toItem(order))
+            .conditionExpression("attribute_not_exists(orderId)")
             .build();
     }
 
