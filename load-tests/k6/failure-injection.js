@@ -20,6 +20,9 @@ const rejectedCount = new Counter('checkout_rejected');
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
 const ITEM_ID  = __ENV.ITEM_ID  || 'failure-test-item';
 
+// Treat 2xx and 4xx as expected (409 = correct inventory rejection)
+http.setResponseCallback(http.expectedStatuses({ min: 200, max: 499 }));
+
 export const options = {
   vus: 200,
   iterations: 200,

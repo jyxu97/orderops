@@ -20,6 +20,9 @@ const rejectedCount = new Counter('checkout_rejected');
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
 const ITEM_ID  = __ENV.ITEM_ID  || 'load-test-item';
 
+// Tell k6 to treat 2xx and 4xx as expected responses (409 = correct inventory rejection)
+http.setResponseCallback(http.expectedStatuses({ min: 200, max: 499 }));
+
 export const options = {
   vus: 1000,
   iterations: 1000,
@@ -27,7 +30,7 @@ export const options = {
     // Zero oversell: exactly 100 orders created against 100-unit stock
     'checkout_success':  ['count == 100'],
     'checkout_rejected': ['count == 900'],
-    // API must never return a 5xx
+    // No network errors or 5xx
     'http_req_failed':   ['rate == 0'],
     // p95 latency under 2 s on local infra
     'http_req_duration': ['p(95) < 2000'],
