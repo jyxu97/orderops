@@ -1,0 +1,43 @@
+{
+  "family": "orderops-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/orderopsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "orderops",
+      "image": "YOUR_ACCOUNT_ID.dkr.ecr.us-west-2.amazonaws.com/orderops:latest",
+      "essential": true,
+      "portMappings": [
+        { "containerPort": 8080, "protocol": "tcp" }
+      ],
+      "environment": [
+        { "name": "APP_MODE",    "value": "api" },
+        { "name": "AWS_REGION",  "value": "us-west-2" },
+        { "name": "REDIS_PORT",  "value": "6379" }
+      ],
+      "secrets": [
+        { "name": "REDIS_HOST",            "valueFrom": "/orderops/redis-host" },
+        { "name": "FULFILLMENT_QUEUE_URL", "valueFrom": "/orderops/fulfillment-queue-url" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group":         "/ecs/orderops",
+          "awslogs-region":        "us-west-2",
+          "awslogs-stream-prefix": "api"
+        }
+      },
+      "healthCheck": {
+        "command":     ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"],
+        "interval":    30,
+        "timeout":     5,
+        "retries":     3,
+        "startPeriod": 60
+      }
+    }
+  ]
+}
