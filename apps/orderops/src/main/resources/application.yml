@@ -1,0 +1,18 @@
+server:
+  port: 8080
+
+aws:
+  region: ${AWS_REGION:us-west-2}
+
+dynamodb:
+  endpoint: ${DYNAMODB_ENDPOINT:http://localhost:8000}
+
+tables:
+  orders:    ${ORDER_TABLE_NAME:Orders}
+  inventory: ${INVENTORY_TABLE_NAME:Inventory}
+  idempotency: ${IDEMPOTENCY_TABLE_NAME:IdempotencyRecords}
+  audit:     ${AUDIT_TABLE_NAME:OrderAuditLogs}
+
+spring:
+  application:
+    name: orderops

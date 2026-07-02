@@ -15,5 +15,6 @@ CLAUDE.md
 # Design document (local reference only)
 design-doc.md
 
-# Test artifacts / DynamoDB Local download cache
+# Test artifacts
+dynamodb-local-metadata.json
 /tmp/dynamodb-local-cache/
