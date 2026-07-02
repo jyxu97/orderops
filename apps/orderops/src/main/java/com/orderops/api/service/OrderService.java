@@ -14,7 +14,6 @@ import com.orderops.shared.state.OrderStateMachine;
 import com.orderops.shared.state.OrderStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -31,28 +30,45 @@ public class OrderService {
     private final InventoryRepository inventoryRepository;
     private final AuditLogRepository auditLogRepository;
     private final OrderStateMachine stateMachine;
+    private final IdempotencyService idempotencyService;
 
-    @Value("${tables.idempotency:IdempotencyRecords}")
-    private String idempotencyTable;
+    /**
+     * Creates an order, with optional idempotency support.
+     *
+     * <p>If {@code idempotencyKey} is provided:
+     * <ul>
+     *   <li>Same key + same body → returns the original response without re-processing</li>
+     *   <li>Same key + different body → throws {@link com.orderops.api.exception.IdempotencyConflictException}</li>
+     * </ul>
+     */
+    public CreateOrderResponse createOrder(CreateOrderRequest request, String idempotencyKey) {
+        // 1. Idempotency check
+        String requestHash = null;
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            requestHash = idempotencyService.computeRequestHash(request);
+            CreateOrderResponse cached = idempotencyService.findCachedResponse(idempotencyKey, requestHash);
+            if (cached != null) {
+                log.info("Returning cached response for Idempotency-Key={}", idempotencyKey);
+                return cached;
+            }
+        }
 
-    public CreateOrderResponse createOrder(CreateOrderRequest request) {
-        String orderId = UUID.randomUUID().toString();
-        String now = Instant.now().toString();
-
-        // Validate the CREATED -> INVENTORY_RESERVED transition
+        // 2. Validate state transition
         stateMachine.validateTransition(OrderStatus.CREATED, OrderStatus.INVENTORY_RESERVED);
 
-        // Reserve inventory for each item (conditional update per item)
+        // 3. Reserve inventory for each item
         for (CreateOrderRequest.OrderItemDto item : request.getItems()) {
             boolean reserved = inventoryRepository.reserveInventory(item.getItemId(), item.getQuantity());
             if (!reserved) {
-                // Roll back already-reserved items
                 rollbackReservedItems(request.getItems(), item.getItemId());
                 throw new InsufficientInventoryException(item.getItemId(), item.getQuantity());
             }
         }
 
-        // Build and persist the order
+        // 4. Build and persist the order
+        String orderId = UUID.randomUUID().toString();
+        String now = Instant.now().toString();
+
         List<Order.OrderItem> orderItems = request.getItems().stream()
             .map(i -> Order.OrderItem.builder()
                 .itemId(i.getItemId())
@@ -72,7 +88,7 @@ public class OrderService {
 
         orderRepository.save(order);
 
-        // Write audit log for the state transition
+        // 5. Write audit log
         auditLogRepository.save(OrderAuditLog.builder()
             .orderId(orderId)
             .timestamp(now)
@@ -83,11 +99,18 @@ public class OrderService {
 
         log.info("Order created orderId={} customerId={}", orderId, request.getCustomerId());
 
-        return CreateOrderResponse.builder()
+        CreateOrderResponse response = CreateOrderResponse.builder()
             .orderId(orderId)
             .status(OrderStatus.INVENTORY_RESERVED.name())
             .createdAt(now)
             .build();
+
+        // 6. Persist idempotency record
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            idempotencyService.store(idempotencyKey, requestHash, response);
+        }
+
+        return response;
     }
 
     public GetOrderResponse getOrder(String orderId) {
@@ -112,10 +135,6 @@ public class OrderService {
             .build();
     }
 
-    /**
-     * Releases previously reserved inventory for items that were successfully reserved
-     * before a failure occurred at {@code failedItemId}.
-     */
     private void rollbackReservedItems(List<CreateOrderRequest.OrderItemDto> items, String failedItemId) {
         for (CreateOrderRequest.OrderItemDto item : items) {
             if (item.getItemId().equals(failedItemId)) {

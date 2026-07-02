@@ -12,6 +12,17 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    @ExceptionHandler(IdempotencyConflictException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    public ErrorResponse handleIdempotencyConflict(IdempotencyConflictException ex) {
+        log.warn("Idempotency conflict: {}", ex.getMessage());
+        return ErrorResponse.builder()
+            .status(HttpStatus.CONFLICT.value())
+            .error("Conflict")
+            .message(ex.getMessage())
+            .build();
+    }
+
     @ExceptionHandler(InsufficientInventoryException.class)
     @ResponseStatus(HttpStatus.CONFLICT)
     public ErrorResponse handleInsufficientInventory(InsufficientInventoryException ex) {

@@ -4,14 +4,19 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.orderops.api.repository.DynamoDbLocalProcess;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -36,6 +41,10 @@ class OrderControllerTest {
         registry.add("aws.region", () -> "us-west-2");
     }
 
+    // Mock Redis so the Spring context loads without a real Redis connection
+    @MockBean
+    StringRedisTemplate redisTemplate;
+
     @Autowired
     private MockMvc mockMvc;
 
@@ -45,8 +54,14 @@ class OrderControllerTest {
     private static final String ITEM_ID = "widget-ctrl-test";
 
     @BeforeEach
-    void seedInventory() throws Exception {
-        // PutItem replaces the record — resets stock to 10 before each test
+    void setUp() throws Exception {
+        // Stub Redis to simulate an empty cache (all gets return null → DynamoDB fallback)
+        @SuppressWarnings("unchecked")
+        ValueOperations<String, String> ops = Mockito.mock(ValueOperations.class);
+        Mockito.when(redisTemplate.opsForValue()).thenReturn(ops);
+        Mockito.when(ops.get(anyString())).thenReturn(null);
+
+        // Reset stock to 10 before each test
         mockMvc.perform(post("/inventory/seed")
             .contentType(MediaType.APPLICATION_JSON)
             .content("""

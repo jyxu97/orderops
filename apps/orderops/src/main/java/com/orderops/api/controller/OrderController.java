@@ -17,8 +17,11 @@ public class OrderController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public CreateOrderResponse createOrder(@RequestBody CreateOrderRequest request) {
-        return orderService.createOrder(request);
+    public CreateOrderResponse createOrder(
+        @RequestBody CreateOrderRequest request,
+        @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey
+    ) {
+        return orderService.createOrder(request, idempotencyKey);
     }
 
     @GetMapping("/{orderId}")
