@@ -9,6 +9,8 @@ import com.orderops.shared.model.Inventory;
 import com.orderops.shared.model.Order;
 import com.orderops.shared.state.OrderStateMachine;
 import com.orderops.shared.state.OrderStatus;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -16,6 +18,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -32,6 +35,7 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
     private InventoryRepository inventoryRepository;
     private PaymentSimulator paymentSimulator;
     private ShipmentSimulator shipmentSimulator;
+    private SimpleMeterRegistry meterRegistry;
     private OrderFulfillmentService fulfillmentService;
 
     @BeforeEach
@@ -48,15 +52,20 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
         paymentSimulator = new PaymentSimulator();
         ReflectionTestUtils.setField(paymentSimulator, "failureMode", "NONE");
         ReflectionTestUtils.setField(paymentSimulator, "failureRate", 0.0);
+        ReflectionTestUtils.setField(paymentSimulator, "transientFailsRemaining", new AtomicInteger(Integer.MAX_VALUE));
 
         shipmentSimulator = new ShipmentSimulator();
         ReflectionTestUtils.setField(shipmentSimulator, "failureMode", "NONE");
         ReflectionTestUtils.setField(shipmentSimulator, "failureRate", 0.0);
+        ReflectionTestUtils.setField(shipmentSimulator, "transientFailsRemaining", new AtomicInteger(Integer.MAX_VALUE));
+
+        meterRegistry = new SimpleMeterRegistry();
 
         fulfillmentService = new OrderFulfillmentService(
             orderRepository, auditLogRepository,
             new OrderStateMachine(),
-            paymentSimulator, shipmentSimulator);
+            paymentSimulator, shipmentSimulator,
+            meterRegistry);
     }
 
     @Test
@@ -67,9 +76,9 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
 
         Order result = orderRepository.findById(order.getOrderId()).orElseThrow();
         assertEquals(OrderStatus.FULFILLED, result.getStatus());
-        // version increments once per transition: 4 transitions total
-        // INVENTORY_RESERVED → PAYMENT_PROCESSING → PAYMENT_SUCCEEDED → SHIPMENT_PROCESSING → FULFILLED
+        // 4 transitions: INVENTORY_RESERVED → PAYMENT_PROCESSING → PAYMENT_SUCCEEDED → SHIPMENT_PROCESSING → FULFILLED
         assertEquals(order.getVersion() + 4, result.getVersion());
+        assertEquals(1.0, meterRegistry.counter("fulfillment.fulfilled").count());
     }
 
     @Test
@@ -80,6 +89,7 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
 
         Order result = orderRepository.findById(order.getOrderId()).orElseThrow();
         assertEquals(OrderStatus.FULFILLED, result.getStatus());
+        assertEquals(1.0, meterRegistry.counter("fulfillment.skipped").count());
     }
 
     @Test
@@ -91,6 +101,7 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
 
         Order result = orderRepository.findById(order.getOrderId()).orElseThrow();
         assertEquals(OrderStatus.NEEDS_MANUAL_REVIEW, result.getStatus());
+        assertEquals(1.0, meterRegistry.counter("fulfillment.manual_review", "stage", "payment").count());
     }
 
     @Test
@@ -102,6 +113,7 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
 
         Order result = orderRepository.findById(order.getOrderId()).orElseThrow();
         assertEquals(OrderStatus.NEEDS_MANUAL_REVIEW, result.getStatus());
+        assertEquals(1.0, meterRegistry.counter("fulfillment.manual_review", "stage", "shipment").count());
     }
 
     @Test
@@ -112,6 +124,44 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
         // Expect exception so SQS does not delete the message
         assertThrows(RuntimeException.class,
             () -> fulfillmentService.fulfill(order.getOrderId()));
+        assertEquals(1.0, meterRegistry.counter("fulfillment.transient_failure").count());
+    }
+
+    @Test
+    void fulfill_transientPaymentThenRecovery_orderFulfilled() {
+        // Simulator fails once, then succeeds — simulates SQS redelivery after transient fault
+        ReflectionTestUtils.setField(paymentSimulator, "failureMode", "TRANSIENT");
+        ReflectionTestUtils.setField(paymentSimulator, "transientFailsRemaining", new AtomicInteger(1));
+        Order order = seedOrder();
+
+        // First call: transient failure, order left in PAYMENT_PROCESSING
+        assertThrows(RuntimeException.class, () -> fulfillmentService.fulfill(order.getOrderId()));
+
+        // Second call: resumes from PAYMENT_PROCESSING, payment succeeds, order reaches FULFILLED
+        fulfillmentService.fulfill(order.getOrderId());
+
+        Order result = orderRepository.findById(order.getOrderId()).orElseThrow();
+        assertEquals(OrderStatus.FULFILLED, result.getStatus());
+        assertEquals(1.0, meterRegistry.counter("fulfillment.transient_failure").count());
+        assertEquals(1.0, meterRegistry.counter("fulfillment.fulfilled").count());
+    }
+
+    @Test
+    void fulfill_transientShipmentThenRecovery_orderFulfilled() {
+        // Simulator fails once at shipment stage, then succeeds on retry
+        ReflectionTestUtils.setField(shipmentSimulator, "failureMode", "TRANSIENT");
+        ReflectionTestUtils.setField(shipmentSimulator, "transientFailsRemaining", new AtomicInteger(1));
+        Order order = seedOrder();
+
+        // First call: payment succeeds, shipment fails transiently, order left in SHIPMENT_PROCESSING
+        assertThrows(RuntimeException.class, () -> fulfillmentService.fulfill(order.getOrderId()));
+
+        // Second call: resumes from SHIPMENT_PROCESSING, shipment succeeds
+        fulfillmentService.fulfill(order.getOrderId());
+
+        Order result = orderRepository.findById(order.getOrderId()).orElseThrow();
+        assertEquals(OrderStatus.FULFILLED, result.getStatus());
+        assertEquals(1.0, meterRegistry.counter("fulfillment.fulfilled").count());
     }
 
     // ------------------------------------------------------------------

@@ -1,6 +1,7 @@
 package com.orderops.worker;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -30,6 +31,7 @@ public class FulfillmentWorker {
     private final SqsClient sqsClient;
     private final OrderFulfillmentService fulfillmentService;
     private final ObjectMapper objectMapper;
+    private final MeterRegistry meterRegistry;
 
     @Value("${sqs.fulfillment-queue-url}")
     private String queueUrl;
@@ -49,8 +51,10 @@ public class FulfillmentWorker {
                 log.info("Processing fulfillment message orderId={}", orderId);
                 fulfillmentService.fulfill(orderId);
                 deleteMessage(message.receiptHandle());
+                meterRegistry.counter("worker.messages.processed").increment();
             } catch (Exception e) {
                 log.error("Failed to process message orderId={}, will redeliver", orderId, e);
+                meterRegistry.counter("worker.messages.failed").increment();
                 // Do not delete — SQS visibility timeout will expire and redeliver
             }
         }

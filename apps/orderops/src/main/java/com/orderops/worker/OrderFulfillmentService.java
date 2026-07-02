@@ -6,6 +6,7 @@ import com.orderops.shared.model.Order;
 import com.orderops.shared.model.OrderAuditLog;
 import com.orderops.shared.state.OrderStateMachine;
 import com.orderops.shared.state.OrderStatus;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -23,6 +24,9 @@ import java.time.Instant;
  *   → FULFILLED          (or FAILED → NEEDS_MANUAL_REVIEW)
  * </pre>
  *
+ * <p>Resume-aware: if a transient failure left the order in an intermediate state, the next
+ * invocation picks up from the current status rather than restarting from scratch.
+ *
  * <p>This service is called by {@link FulfillmentWorker} for each SQS message, but can also be
  * invoked directly in tests without an SQS dependency.
  */
@@ -36,6 +40,7 @@ public class OrderFulfillmentService {
     private final OrderStateMachine stateMachine;
     private final PaymentSimulator paymentSimulator;
     private final ShipmentSimulator shipmentSimulator;
+    private final MeterRegistry meterRegistry;
 
     public void fulfill(String orderId) {
         Order order = orderRepository.findById(orderId)
@@ -44,41 +49,49 @@ public class OrderFulfillmentService {
         // Worker idempotency: skip orders already in a terminal state
         if (isTerminal(order.getStatus())) {
             log.info("Order {} already terminal ({}), skipping", orderId, order.getStatus());
+            meterRegistry.counter("fulfillment.skipped").increment();
             return;
         }
 
         try {
-            // INVENTORY_RESERVED → PAYMENT_PROCESSING
-            order = applyTransition(order, OrderStatus.PAYMENT_PROCESSING, "Processing payment");
+            // Resume from wherever the order left off after a previous transient failure.
 
-            boolean paymentOk = paymentSimulator.process(orderId);
-
-            if (!paymentOk) {
-                order = applyTransition(order, OrderStatus.FAILED, "Payment declined");
-                applyTransition(order, OrderStatus.NEEDS_MANUAL_REVIEW, "Queued for manual review");
-                return;
+            if (order.getStatus() == OrderStatus.INVENTORY_RESERVED) {
+                order = applyTransition(order, OrderStatus.PAYMENT_PROCESSING, "Processing payment");
             }
 
-            // PAYMENT_PROCESSING → PAYMENT_SUCCEEDED
-            order = applyTransition(order, OrderStatus.PAYMENT_SUCCEEDED, "Payment authorized");
-
-            // PAYMENT_SUCCEEDED → SHIPMENT_PROCESSING
-            order = applyTransition(order, OrderStatus.SHIPMENT_PROCESSING, "Processing shipment");
-
-            boolean shipmentOk = shipmentSimulator.process(orderId);
-
-            if (!shipmentOk) {
-                order = applyTransition(order, OrderStatus.FAILED, "Shipment failed");
-                applyTransition(order, OrderStatus.NEEDS_MANUAL_REVIEW, "Queued for manual review");
-                return;
+            if (order.getStatus() == OrderStatus.PAYMENT_PROCESSING) {
+                boolean paymentOk = paymentSimulator.process(orderId);
+                if (!paymentOk) {
+                    order = applyTransition(order, OrderStatus.FAILED, "Payment declined");
+                    applyTransition(order, OrderStatus.NEEDS_MANUAL_REVIEW, "Queued for manual review");
+                    meterRegistry.counter("fulfillment.manual_review", "stage", "payment").increment();
+                    return;
+                }
+                order = applyTransition(order, OrderStatus.PAYMENT_SUCCEEDED, "Payment authorized");
             }
 
-            // SHIPMENT_PROCESSING → FULFILLED
-            applyTransition(order, OrderStatus.FULFILLED, "Order delivered");
+            if (order.getStatus() == OrderStatus.PAYMENT_SUCCEEDED) {
+                order = applyTransition(order, OrderStatus.SHIPMENT_PROCESSING, "Processing shipment");
+            }
+
+            if (order.getStatus() == OrderStatus.SHIPMENT_PROCESSING) {
+                boolean shipmentOk = shipmentSimulator.process(orderId);
+                if (!shipmentOk) {
+                    order = applyTransition(order, OrderStatus.FAILED, "Shipment failed");
+                    applyTransition(order, OrderStatus.NEEDS_MANUAL_REVIEW, "Queued for manual review");
+                    meterRegistry.counter("fulfillment.manual_review", "stage", "shipment").increment();
+                    return;
+                }
+                applyTransition(order, OrderStatus.FULFILLED, "Order delivered");
+            }
+
             log.info("Order {} fulfilled successfully", orderId);
+            meterRegistry.counter("fulfillment.fulfilled").increment();
 
         } catch (RuntimeException e) {
             log.error("Fulfillment failed for orderId={}: {}", orderId, e.getMessage());
+            meterRegistry.counter("fulfillment.transient_failure").increment();
             throw e; // re-throw so SQS does not delete the message (will retry / DLQ)
         }
     }
