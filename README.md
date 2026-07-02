@@ -223,4 +223,59 @@ resumes from that state instead of restarting, preventing double-charging.
 
 **SQS at-least-once + worker idempotency**
 Terminal orders (`FULFILLED`, `NEEDS_MANUAL_REVIEW`) are skipped on duplicate delivery.
+
+---
+
+## Benchmark Results
+
+All tests run locally with Docker Compose (DynamoDB Local, LocalStack SQS, Redis).
+
+### Throughput & Latency (20 VUs, 90s sustained)
+
+| Metric | Value |
+|--------|-------|
+| Total orders created | 44,788 |
+| Throughput | 497 req/s |
+| Avg latency | 40 ms |
+| p90 latency | 57 ms |
+| p95 latency | 67 ms |
+| p99 latency | 121 ms |
+| Error rate | 0% |
+
+### Concurrent Checkout Correctness (1,000 VUs, 100 inventory units)
+
+| Metric | Value |
+|--------|-------|
+| Concurrent requests | 1,000 |
+| Successful reservations | 100 |
+| Rejected (out of stock) | 900 |
+| Oversold inventory | 0 |
+| 5xx errors | 0 |
+
+### Idempotency (10 keys × 10 duplicate requests)
+
+| Metric | Value |
+|--------|-------|
+| Original orders created | 10 |
+| Duplicate requests sent | 100 |
+| Returned same orderId | 100 (100%) |
+| Extra inventory deductions | 0 |
+
+### Transient Failure Retry Recovery (50 orders, 10% random failure rate)
+
+| Metric | Value |
+|--------|-------|
+| Orders submitted | 50 |
+| FULFILLED | 50 (100%) |
+| DLQ messages | 0 |
+| No silent loss | ✓ |
+
+### Permanent Poison Message → DLQ (10 always-failing orders, maxReceiveCount=3)
+
+| Metric | Value |
+|--------|-------|
+| Poison orders submitted | 10 |
+| Routed to DLQ | 10 (100%) |
+| Source queue after test | 0 |
+| Worker attempt logs | ~30 (3 per message) |
 Transient failures re-throw so SQS redelivers; after 3 attempts the message goes to the DLQ.

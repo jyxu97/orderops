@@ -31,9 +31,6 @@ import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 @ConditionalOnProperty(name = "app.mode", havingValue = "worker")
 public class FulfillmentWorker {
 
-    private static final int BASE_BACKOFF_SECONDS = 30;
-    private static final int MAX_BACKOFF_SECONDS  = 300; // 5 min
-
     private final SqsClient sqsClient;
     private final OrderFulfillmentService fulfillmentService;
     private final ObjectMapper objectMapper;
@@ -41,6 +38,12 @@ public class FulfillmentWorker {
 
     @Value("${sqs.fulfillment-queue-url}")
     private String queueUrl;
+
+    @Value("${worker.backoff.base-seconds:30}")
+    private int baseBackoffSeconds;
+
+    @Value("${worker.backoff.max-seconds:300}")
+    private int maxBackoffSeconds;
 
     @Scheduled(fixedDelay = 1000)
     public void poll() {
@@ -70,10 +73,10 @@ public class FulfillmentWorker {
         }
     }
 
-    /** Backoff: 30s × 2^(attempt-1), capped at MAX_BACKOFF_SECONDS. */
+    /** Backoff: baseBackoffSeconds × 2^(attempt-1), capped at maxBackoffSeconds. */
     private int computeBackoff(int attempt) {
-        int backoff = BASE_BACKOFF_SECONDS * (1 << Math.max(0, attempt - 1));
-        return Math.min(backoff, MAX_BACKOFF_SECONDS);
+        int backoff = baseBackoffSeconds * (1 << Math.max(0, attempt - 1));
+        return Math.min(backoff, maxBackoffSeconds);
     }
 
     private int parseReceiveCount(Message message) {

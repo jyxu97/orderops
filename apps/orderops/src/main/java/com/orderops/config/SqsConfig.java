@@ -24,12 +24,12 @@ public class SqsConfig {
     public SqsClient sqsClient() {
         var builder = SqsClient.builder()
             .region(Region.of(region))
-            .credentialsProvider(StaticCredentialsProvider.create(
-                AwsBasicCredentials.create("local", "local")))
             .httpClient(UrlConnectionHttpClient.builder().build());
 
         if (sqsEndpoint != null && !sqsEndpoint.isBlank()) {
-            builder.endpointOverride(URI.create(sqsEndpoint));
+            builder.endpointOverride(URI.create(sqsEndpoint))
+                   .credentialsProvider(StaticCredentialsProvider.create(
+                       AwsBasicCredentials.create("local", "local")));
         }
 
         return builder.build();
