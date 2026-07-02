@@ -9,6 +9,7 @@ import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -41,6 +42,31 @@ public class OrderRepository {
             return Optional.empty();
         }
         return Optional.of(mapToOrder(resp.item()));
+    }
+
+    /**
+     * Conditionally updates order status and increments version.
+     * Uses optimistic locking: fails if {@code expectedVersion} doesn't match.
+     */
+    public void updateStatus(String orderId, OrderStatus newStatus, long expectedVersion) {
+        try {
+            dynamoDb.updateItem(UpdateItemRequest.builder()
+                .tableName(tableName)
+                .key(Map.of("orderId", AttributeValue.fromS(orderId)))
+                .updateExpression("SET #st = :status, #ver = :newVer, updatedAt = :now")
+                .conditionExpression("#ver = :expectedVer")
+                .expressionAttributeNames(Map.of("#st", "status", "#ver", "version"))
+                .expressionAttributeValues(Map.of(
+                    ":status",      AttributeValue.fromS(newStatus.name()),
+                    ":newVer",      AttributeValue.fromN(String.valueOf(expectedVersion + 1)),
+                    ":expectedVer", AttributeValue.fromN(String.valueOf(expectedVersion)),
+                    ":now",         AttributeValue.fromS(Instant.now().toString())
+                ))
+                .build());
+        } catch (ConditionalCheckFailedException e) {
+            throw new RuntimeException(
+                "Version conflict updating order " + orderId + " to " + newStatus, e);
+        }
     }
 
     // Used by TransactWriteItems — returns the Put object for embedding in a transaction

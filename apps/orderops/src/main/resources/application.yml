@@ -13,6 +13,21 @@ tables:
   idempotency: ${IDEMPOTENCY_TABLE_NAME:IdempotencyRecords}
   audit:     ${AUDIT_TABLE_NAME:OrderAuditLogs}
 
+sqs:
+  endpoint: ${SQS_ENDPOINT:http://localhost:4566}
+  fulfillment-queue-url: ${FULFILLMENT_QUEUE_URL:http://localhost:4566/000000000000/order-fulfillment-queue}
+  fulfillment-dlq-url: ${FULFILLMENT_DLQ_URL:http://localhost:4566/000000000000/order-fulfillment-dlq}
+
+app:
+  mode: ${APP_MODE:api}
+
+simulator:
+  payment:
+    failure-mode: ${PAYMENT_FAILURE_MODE:NONE}
+  shipment:
+    failure-mode: ${SHIPMENT_FAILURE_MODE:NONE}
+  failure-rate: ${FULFILLMENT_FAILURE_RATE:0.0}
+
 spring:
   application:
     name: orderops

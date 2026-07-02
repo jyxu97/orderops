@@ -31,6 +31,7 @@ public class OrderService {
     private final AuditLogRepository auditLogRepository;
     private final OrderStateMachine stateMachine;
     private final IdempotencyService idempotencyService;
+    private final SqsPublisher sqsPublisher;
 
     /**
      * Creates an order, with optional idempotency support.
@@ -109,6 +110,9 @@ public class OrderService {
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
             idempotencyService.store(idempotencyKey, requestHash, response);
         }
+
+        // 7. Publish to SQS for async fulfillment
+        sqsPublisher.publishOrderCreated(orderId);
 
         return response;
     }

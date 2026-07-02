@@ -2,6 +2,7 @@ package com.orderops.api.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.orderops.api.repository.DynamoDbLocalProcess;
+import com.orderops.api.service.SqsPublisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -41,9 +42,11 @@ class OrderControllerTest {
         registry.add("aws.region", () -> "us-west-2");
     }
 
-    // Mock Redis so the Spring context loads without a real Redis connection
+    // Mock Redis and SQS so the Spring context loads without real connections
     @MockBean
     StringRedisTemplate redisTemplate;
+    @MockBean
+    SqsPublisher sqsPublisher;
 
     @Autowired
     private MockMvc mockMvc;
