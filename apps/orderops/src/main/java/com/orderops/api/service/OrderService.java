@@ -12,6 +12,7 @@ import com.orderops.shared.model.Order;
 import com.orderops.shared.model.OrderAuditLog;
 import com.orderops.shared.state.OrderStateMachine;
 import com.orderops.shared.state.OrderStatus;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -32,6 +33,7 @@ public class OrderService {
     private final OrderStateMachine stateMachine;
     private final IdempotencyService idempotencyService;
     private final SqsPublisher sqsPublisher;
+    private final MeterRegistry meterRegistry;
 
     /**
      * Creates an order, with optional idempotency support.
@@ -62,6 +64,7 @@ public class OrderService {
             boolean reserved = inventoryRepository.reserveInventory(item.getItemId(), item.getQuantity());
             if (!reserved) {
                 rollbackReservedItems(request.getItems(), item.getItemId());
+                meterRegistry.counter("orders.inventory_rejected").increment();
                 throw new InsufficientInventoryException(item.getItemId(), item.getQuantity());
             }
         }
@@ -99,6 +102,7 @@ public class OrderService {
             .build());
 
         log.info("Order created orderId={} customerId={}", orderId, request.getCustomerId());
+        meterRegistry.counter("orders.created").increment();
 
         CreateOrderResponse response = CreateOrderResponse.builder()
             .orderId(orderId)

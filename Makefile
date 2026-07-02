@@ -21,7 +21,10 @@ test:
 	mvn -f apps/orderops/pom.xml test
 
 load-test:
-	k6 run load-tests/k6/concurrent-checkout.js
+	@echo "Seeding inventory: 100 units of load-test-item..."
+	bash load-tests/scripts/seed.sh http://localhost:8080 load-test-item 100
+	@echo "Running k6 concurrency test (1000 VUs, 100-unit stock)..."
+	k6 run -e BASE_URL=http://localhost:8080 -e ITEM_ID=load-test-item load-tests/k6/concurrent-checkout.js
 
 failure-test:
 	bash load-tests/scripts/failure-test.sh
