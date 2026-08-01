@@ -4,8 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.orderops.api.dto.CreateOrderRequest;
 import com.orderops.api.dto.CreateOrderResponse;
-import com.orderops.api.exception.IdempotencyConflictException;
 import com.orderops.api.repository.IdempotencyRepository;
+import com.orderops.api.exception.IdempotencyConflictException;
 import com.orderops.shared.model.IdempotencyRecord;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -63,26 +63,8 @@ public class IdempotencyService {
     }
 
     /**
-     * Persists the idempotency record to DynamoDB and caches it in Redis.
-     * Called after a successful order creation.
-     */
-    public void store(String idempotencyKey, String requestHash, CreateOrderResponse response) {
-        IdempotencyRecord record = IdempotencyRecord.builder()
-            .idempotencyKey(idempotencyKey)
-            .requestHash(requestHash)
-            .orderId(response.getOrderId())
-            .orderStatus(response.getStatus())
-            .createdAt(response.getCreatedAt())
-            .build();
-
-        idempotencyRepository.save(record);
-        safeRedisSet(idempotencyKey, toJson(record));
-        log.info("Stored idempotency record key={} orderId={}", idempotencyKey, response.getOrderId());
-    }
-
-    /**
-     * Writes only the Redis cache entry after the DynamoDB idempotency record has
-     * already been persisted inside a TransactWriteItems call.
+     * Writes the Redis cache entry after the DynamoDB idempotency record has
+     * been persisted inside a TransactWriteItems call.
      */
     public void cacheResponseInRedis(String idempotencyKey, String requestHash, CreateOrderResponse response) {
         IdempotencyRecord record = IdempotencyRecord.builder()

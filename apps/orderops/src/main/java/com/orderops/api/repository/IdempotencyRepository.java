@@ -21,19 +21,6 @@ public class IdempotencyRepository {
     @Value("${tables.idempotency:IdempotencyRecords}")
     private String tableName;
 
-    public void save(IdempotencyRecord record) {
-        dynamoDb.putItem(PutItemRequest.builder()
-            .tableName(tableName)
-            .item(Map.of(
-                "idempotencyKey", AttributeValue.fromS(record.getIdempotencyKey()),
-                "requestHash",    AttributeValue.fromS(record.getRequestHash()),
-                "orderId",        AttributeValue.fromS(record.getOrderId()),
-                "orderStatus",    AttributeValue.fromS(record.getOrderStatus()),
-                "createdAt",      AttributeValue.fromS(record.getCreatedAt())
-            ))
-            .build());
-    }
-
     /** Returns a TransactWriteItem for use in a transactWriteItems call. */
     public TransactWriteItem buildSaveTransactItem(IdempotencyRecord record) {
         return TransactWriteItem.builder()

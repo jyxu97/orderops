@@ -114,30 +114,6 @@ class IdempotencyServiceTest {
     }
 
     // ------------------------------------------------------------------
-    // store
-    // ------------------------------------------------------------------
-
-    @Test
-    void store_savesToDynamoAndRedis() {
-        String key = "key-store";
-        String hash = "hashStore";
-        CreateOrderResponse response = CreateOrderResponse.builder()
-            .orderId("order-stored")
-            .status("INVENTORY_RESERVED")
-            .createdAt("2026-01-01T00:00:00Z")
-            .build();
-
-        idempotencyService.store(key, hash, response);
-
-        verify(idempotencyRepository).save(argThat(record ->
-            record.getIdempotencyKey().equals(key) &&
-            record.getRequestHash().equals(hash) &&
-            record.getOrderId().equals("order-stored")
-        ));
-        verify(valueOps).set(eq("idem:" + key), anyString(), any());
-    }
-
-    // ------------------------------------------------------------------
     // computeRequestHash
     // ------------------------------------------------------------------
 

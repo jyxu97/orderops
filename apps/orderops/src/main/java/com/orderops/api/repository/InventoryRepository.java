@@ -101,26 +101,6 @@ public class InventoryRepository {
             .build();
     }
 
-    /**
-     * Releases a previously reserved quantity back to available.
-     * Retained for direct use in non-transactional contexts.
-     */
-    public void releaseInventory(String itemId, int quantity) {
-        dynamoDb.updateItem(UpdateItemRequest.builder()
-            .tableName(tableName)
-            .key(Map.of("itemId", AttributeValue.fromS(itemId)))
-            .updateExpression(
-                "SET availableQuantity = availableQuantity + :qty, " +
-                "    reservedQuantity  = reservedQuantity  - :qty, " +
-                "    #ver              = #ver              + :one")
-            .expressionAttributeNames(Map.of("#ver", "version"))
-            .expressionAttributeValues(Map.of(
-                ":qty", AttributeValue.fromN(String.valueOf(quantity)),
-                ":one", AttributeValue.fromN("1")
-            ))
-            .build());
-    }
-
     private Inventory mapToInventory(Map<String, AttributeValue> item) {
         return Inventory.builder()
             .itemId(item.get("itemId").s())
