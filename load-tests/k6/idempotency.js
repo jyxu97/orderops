@@ -27,7 +27,7 @@ const ITEM_ID  = __ENV.ITEM_ID  || 'idem-item';
 // 10 shared keys — each will be sent by multiple VUs
 const IDEM_KEYS = Array.from({ length: 10 }, (_, i) => `shared-key-${i}`);
 
-// http.setResponseCallback is not needed since 201 is expected most times
+// Accept 200 (replay) and 201 (new order) as non-failed; 4xx are also accepted for conflict detection
 http.setResponseCallback(http.expectedStatuses({ min: 200, max: 499 }));
 
 export const options = {
