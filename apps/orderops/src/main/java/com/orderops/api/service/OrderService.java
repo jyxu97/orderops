@@ -132,16 +132,38 @@ public class OrderService {
                 .build());
         } catch (TransactionCanceledException e) {
             // Each CancellationReason maps 1:1 to the TransactWriteItem at the same index.
-            // Positions [0..N-1] are inventory items; check each for ConditionalCheckFailed.
+            // Positions [0..N-1] are inventory items; [N] is the order put; [N+1] is idempotency.
             List<CancellationReason> reasons = e.cancellationReasons();
-            for (int i = 0; i < request.getItems().size(); i++) {
+            int n = request.getItems().size();
+
+            // Check inventory positions [0..N-1] for insufficient stock.
+            for (int i = 0; i < n; i++) {
                 if (i < reasons.size() && "ConditionalCheckFailed".equals(reasons.get(i).code())) {
-                    String itemId  = request.getItems().get(i).getItemId();
-                    int quantity   = request.getItems().get(i).getQuantity();
+                    String itemId = request.getItems().get(i).getItemId();
+                    int quantity  = request.getItems().get(i).getQuantity();
                     meterRegistry.counter("orders.inventory_rejected").increment();
                     throw new InsufficientInventoryException(itemId, quantity);
                 }
             }
+
+            // Check idempotency position [N+1]: ConditionalCheckFailed here means a concurrent
+            // request with the same key won the race. Fetch and return its committed result.
+            int idemIdx = n + 1;
+            if (idempotencyKey != null && !idempotencyKey.isBlank()
+                    && idemIdx < reasons.size()
+                    && "ConditionalCheckFailed".equals(reasons.get(idemIdx).code())) {
+                log.info("Idempotency race condition detected for key={}, fetching winner's record", idempotencyKey);
+                return idempotencyRepository.findByKey(idempotencyKey)
+                    .map(rec -> CreateOrderResponse.builder()
+                        .orderId(rec.getOrderId())
+                        .status(rec.getOrderStatus())
+                        .createdAt(rec.getCreatedAt())
+                        .replayed(true)
+                        .build())
+                    .orElseThrow(() -> new RuntimeException(
+                        "Idempotency race: ConditionalCheckFailed but record missing for key: " + idempotencyKey));
+            }
+
             throw new RuntimeException("Transaction failed unexpectedly: " + e.getMessage(), e);
         }
 
