@@ -9,4 +9,5 @@ public class CreateOrderResponse {
     String orderId;
     String status;
     String createdAt;
+    boolean replayed;
 }

@@ -99,13 +99,14 @@ class OrderIdempotencyTest {
 
         String firstOrderId = objectMapper.readTree(firstResponse).get("orderId").asText();
 
-        // Second request with identical key and body: returns the same order
+        // Second request with identical key and body: returns 200 with the same order
         mockMvc.perform(post("/orders")
                 .header("Idempotency-Key", idempotencyKey)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body))
-            .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.orderId").value(firstOrderId));
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.orderId").value(firstOrderId))
+            .andExpect(jsonPath("$.replayed").value(true));
     }
 
     @Test

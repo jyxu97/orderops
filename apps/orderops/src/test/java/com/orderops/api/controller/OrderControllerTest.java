@@ -135,4 +135,41 @@ class OrderControllerTest {
             .andExpect(status().isNotFound())
             .andExpect(jsonPath("$.status").value(404));
     }
+
+    @Test
+    void postOrders_idempotentReplay_returns200WithSameOrderId() throws Exception {
+        String body = """
+            {
+              "customerId": "customer-idem",
+              "items": [{"itemId": "%s", "quantity": 1}]
+            }
+            """.formatted(ITEM_ID);
+
+        // First request → 201
+        String firstResult = mockMvc.perform(post("/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", "test-replay-key")
+                .content(body))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.replayed").value(false))
+            .andReturn().getResponse().getContentAsString();
+
+        String orderId = new ObjectMapper().readTree(firstResult).get("orderId").asText();
+
+        // Stub Redis to return the cached value for the replay
+        @SuppressWarnings("unchecked")
+        ValueOperations<String, String> ops = Mockito.mock(ValueOperations.class);
+        Mockito.when(redisTemplate.opsForValue()).thenReturn(ops);
+        // Return null so the DynamoDB slow path is exercised (Redis miss → DynamoDB hit)
+        Mockito.when(ops.get(anyString())).thenReturn(null);
+
+        // Second request with same key → 200, same orderId, replayed=true
+        mockMvc.perform(post("/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", "test-replay-key")
+                .content(body))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.orderId").value(orderId))
+            .andExpect(jsonPath("$.replayed").value(true));
+    }
 }

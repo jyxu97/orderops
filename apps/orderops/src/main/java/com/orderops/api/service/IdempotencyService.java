@@ -105,6 +105,7 @@ public class IdempotencyService {
                 .orderId(node.get("orderId").asText())
                 .status(node.get("orderStatus").asText())
                 .createdAt(node.get("createdAt").asText())
+                .replayed(true)
                 .build();
         } catch (IdempotencyConflictException e) {
             throw e;
