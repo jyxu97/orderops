@@ -1,13 +1,13 @@
 /**
- * Failure Injection Load Test
+ * High-Contention Checkout Load Test
  *
- * Verifies system correctness under intentional inventory contention:
+ * Verifies zero oversell under extreme inventory contention:
  * - 200 virtual users each attempt to reserve 1 unit
- * - Inventory is pre-seeded to only 10 units (high rejection rate)
- * - Expected: at most 10 succeed, at least 190 are rejected, zero 5xx errors
+ * - Inventory is pre-seeded to only 10 units (95% rejection rate)
+ * - Expected: at most 10 succeed, at least 190 are rejected (409), zero 5xx errors
  *
  * Run:
- *   k6 run -e BASE_URL=http://localhost:8080 -e ITEM_ID=failure-test-item load-tests/k6/failure-injection.js
+ *   k6 run -e BASE_URL=http://localhost:8080 -e ITEM_ID=failure-test-item load-tests/k6/high-contention-checkout.js
  */
 
 import http from 'k6/http';

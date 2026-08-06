@@ -18,4 +18,4 @@ echo "Running k6 failure injection (200 VUs, 10-unit stock)..."
 k6 run \
   -e BASE_URL="$BASE_URL" \
   -e ITEM_ID="$ITEM_ID" \
-  load-tests/k6/failure-injection.js
+  load-tests/k6/high-contention-checkout.js
