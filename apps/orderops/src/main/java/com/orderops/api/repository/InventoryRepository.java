@@ -8,6 +8,7 @@ import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
@@ -22,15 +23,18 @@ public class InventoryRepository {
     private String tableName;
 
     public void save(Inventory inventory) {
+        Map<String, AttributeValue> item = new HashMap<>();
+        item.put("itemId",            AttributeValue.fromS(inventory.getItemId()));
+        item.put("totalQuantity",     AttributeValue.fromN(String.valueOf(inventory.getTotalQuantity())));
+        item.put("availableQuantity", AttributeValue.fromN(String.valueOf(inventory.getAvailableQuantity())));
+        item.put("reservedQuantity",  AttributeValue.fromN(String.valueOf(inventory.getReservedQuantity())));
+        item.put("version",           AttributeValue.fromN(String.valueOf(inventory.getVersion())));
+        if (inventory.getItemName() != null) {
+            item.put("itemName", AttributeValue.fromS(inventory.getItemName()));
+        }
         dynamoDb.putItem(PutItemRequest.builder()
             .tableName(tableName)
-            .item(Map.of(
-                "itemId",            AttributeValue.fromS(inventory.getItemId()),
-                "totalQuantity",     AttributeValue.fromN(String.valueOf(inventory.getTotalQuantity())),
-                "availableQuantity", AttributeValue.fromN(String.valueOf(inventory.getAvailableQuantity())),
-                "reservedQuantity",  AttributeValue.fromN(String.valueOf(inventory.getReservedQuantity())),
-                "version",           AttributeValue.fromN(String.valueOf(inventory.getVersion()))
-            ))
+            .item(item)
             .build());
     }
 
@@ -102,8 +106,10 @@ public class InventoryRepository {
     }
 
     private Inventory mapToInventory(Map<String, AttributeValue> item) {
+        AttributeValue nameAttr = item.get("itemName");
         return Inventory.builder()
             .itemId(item.get("itemId").s())
+            .itemName(nameAttr != null ? nameAttr.s() : null)
             .totalQuantity(Integer.parseInt(item.get("totalQuantity").n()))
             .availableQuantity(Integer.parseInt(item.get("availableQuantity").n()))
             .reservedQuantity(Integer.parseInt(item.get("reservedQuantity").n()))

@@ -7,6 +7,7 @@ import lombok.Value;
 @Builder
 public class GetInventoryResponse {
     String itemId;
+    String itemName;
     int totalQuantity;
     int availableQuantity;
     int reservedQuantity;

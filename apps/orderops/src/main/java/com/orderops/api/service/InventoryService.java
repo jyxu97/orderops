@@ -18,6 +18,7 @@ public class InventoryService {
     public GetInventoryResponse seed(SeedInventoryRequest request) {
         Inventory inventory = Inventory.builder()
             .itemId(request.getItemId())
+            .itemName(request.getItemName())
             .totalQuantity(request.getQuantity())
             .availableQuantity(request.getQuantity())
             .reservedQuantity(0)
@@ -37,6 +38,7 @@ public class InventoryService {
     private GetInventoryResponse toResponse(Inventory inv) {
         return GetInventoryResponse.builder()
             .itemId(inv.getItemId())
+            .itemName(inv.getItemName())
             .totalQuantity(inv.getTotalQuantity())
             .availableQuantity(inv.getAvailableQuantity())
             .reservedQuantity(inv.getReservedQuantity())
