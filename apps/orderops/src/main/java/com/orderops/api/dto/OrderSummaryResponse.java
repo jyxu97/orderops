@@ -1,5 +1,6 @@
 package com.orderops.api.dto;
 
+import com.orderops.shared.model.Order;
 import lombok.Builder;
 import lombok.Value;
 
@@ -23,4 +24,18 @@ public class OrderSummaryResponse {
     long version;
     String createdAt;
     String updatedAt;
+
+    public static OrderSummaryResponse from(Order order) {
+        return OrderSummaryResponse.builder()
+            .orderId(order.getOrderId())
+            .customerId(order.getCustomerId())
+            .status(order.getStatus().name())
+            .itemCount(order.getItems().size())
+            .totalQuantity(order.getItems().stream().mapToInt(Order.OrderItem::getQuantity).sum())
+            .totalAmount(order.getTotalAmount())
+            .version(order.getVersion())
+            .createdAt(order.getCreatedAt())
+            .updatedAt(order.getUpdatedAt())
+            .build();
+    }
 }

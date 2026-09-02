@@ -101,4 +101,21 @@ class OrderQueryTest extends DynamoDbTestBase {
         assertThrows(IllegalArgumentException.class,
             () -> repository.findByCustomerId("cust-1", 25, "not-a-valid-cursor!!!"));
     }
+
+    @Test
+    void countByStatus_countsOnlyThatStatus() {
+        // CREATED is never persisted by the checkout path, so this status starts empty and the
+        // assertion can be exact rather than relative.
+        OrderRepository.StatusCount before = repository.countByStatus(OrderStatus.CREATED);
+
+        Instant base = Instant.now();
+        save("cust-count-" + UUID.randomUUID(), OrderStatus.CREATED, base);
+        save("cust-count-" + UUID.randomUUID(), OrderStatus.CREATED, base.plusMillis(1));
+        save("cust-count-" + UUID.randomUUID(), OrderStatus.FULFILLED, base);
+
+        OrderRepository.StatusCount after = repository.countByStatus(OrderStatus.CREATED);
+
+        assertEquals(before.count() + 2, after.count());
+        assertFalse(after.capped(), "a small result set must not report as capped");
+    }
 }

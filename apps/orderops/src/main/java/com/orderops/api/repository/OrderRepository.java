@@ -34,6 +34,9 @@ public class OrderRepository {
      */
     public static final String GSI_STATUS_UPDATED_AT = "GSI2_StatusUpdatedAt";
 
+    /** Page cap for {@link #countByStatus}, bounding a dashboard read to 20 index pages. */
+    private static final int MAX_COUNT_PAGES = 20;
+
     private final DynamoDbClient dynamoDb;
 
     @Value("${tables.orders:Orders}")
@@ -67,6 +70,51 @@ public class OrderRepository {
     public Page<Order> findByStatus(OrderStatus status, int limit, String cursor) {
         return query(GSI_STATUS_UPDATED_AT, "status", status.name(), limit, cursor);
     }
+
+    /**
+     * Number of orders currently in {@code status}, via {@link #GSI_STATUS_UPDATED_AT}.
+     *
+     * <p>Uses a {@code Select=COUNT} query so the items themselves never cross the wire. The
+     * page loop is capped: a dashboard tile is not worth an unbounded read, and a count that
+     * hit the cap is reported as such rather than as a wrong number. At production scale these
+     * would be maintained as counters off DynamoDB Streams instead of counted on read.
+     */
+    public StatusCount countByStatus(OrderStatus status) {
+        int total = 0;
+        Map<String, AttributeValue> startKey = null;
+
+        for (int page = 0; page < MAX_COUNT_PAGES; page++) {
+            var builder = QueryRequest.builder()
+                .tableName(tableName)
+                .indexName(GSI_STATUS_UPDATED_AT)
+                .keyConditionExpression("#pk = :pk")
+                .expressionAttributeNames(Map.of("#pk", "status"))
+                .expressionAttributeValues(Map.of(":pk", AttributeValue.fromS(status.name())))
+                .select(Select.COUNT);
+            if (startKey != null) {
+                builder.exclusiveStartKey(startKey);
+            }
+
+            QueryResponse resp = dynamoDb.query(builder.build());
+            total += resp.count();
+
+            if (resp.lastEvaluatedKey() == null || resp.lastEvaluatedKey().isEmpty()) {
+                return new StatusCount(total, false);
+            }
+            startKey = resp.lastEvaluatedKey();
+        }
+
+        log.warn("Count for status={} hit the {}-page cap at {} orders", status, MAX_COUNT_PAGES, total);
+        return new StatusCount(total, true);
+    }
+
+    /**
+     * An order count, and whether counting stopped early at the page cap.
+     *
+     * @param count    orders counted
+     * @param capped   true when more orders exist than were counted
+     */
+    public record StatusCount(int count, boolean capped) {}
 
     /**
      * Conditionally updates order status and increments version.

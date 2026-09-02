@@ -182,6 +182,45 @@ GET  /api/v1/inventory/{itemId}        → 200 OK / 404 Not Found
 POST /api/v1/inventory/seed            → { "itemId": "widget-a", "quantity": 100, "unitPrice": 19.99 }
 ```
 
+### Order audit timeline
+
+```
+GET /api/v1/orders/{orderId}/audit
+
+200 OK → [ { "timestamp": "...", "fromStatus": "CREATED",
+             "toStatus": "INVENTORY_RESERVED", "reason": "Order created" }, ... ]
+404 Not Found
+```
+
+Oldest first. The `OrderAuditLogs` sort key is the ISO-8601 timestamp, so index order is
+already chronological — nothing is sorted client-side.
+
+### Operations
+
+```
+GET /api/v1/ops/overview?recentLimit=20   → status counts + recent orders + queue depth
+GET /api/v1/ops/orders?limit=25           → most recently updated orders, all statuses
+GET /api/v1/ops/failures?limit=25         → failed orders joined with their last failure reason
+GET /api/v1/ops/queue-health              → queue and DLQ depth, with threshold warnings
+```
+
+Notes on how these are served:
+
+- **Nothing scans the Orders table.** Every read goes through `GSI2_StatusUpdatedAt`.
+- **"Recent orders across all statuses" is a bounded fan-out** — one indexed query per status,
+  merged in memory. There is no index that orders every order by update time, and adding one
+  would mean a single-partition index covering the whole table.
+- **Status counts use `Select=COUNT`**, so items never cross the wire. The page loop is capped
+  at 20 index pages; if a count stops at the cap, `countsCapped` is `true` and the totals are
+  lower bounds rather than exact figures. At production scale these would be maintained as
+  counters off DynamoDB Streams instead of counted on read.
+- **`queue-health` degrades instead of failing.** If SQS is unreachable it returns 200 with
+  `available: false` and omits `healthy` entirely — a missing reading is never rendered as a
+  healthy one, and a broken metrics read does not hide the order data next to it.
+- **Oldest-message age is absent on purpose.** `ApproximateAgeOfOldestMessage` is a CloudWatch
+  metric, not an SQS queue attribute; reading it from SQS would mean receiving a message, which
+  advances its receive count and pushes it toward the DLQ. It is alarmed on in CloudWatch.
+
 ### Metrics
 
 ```

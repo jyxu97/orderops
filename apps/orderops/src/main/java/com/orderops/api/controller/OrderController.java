@@ -3,6 +3,7 @@ package com.orderops.api.controller;
 import com.orderops.api.dto.CreateOrderRequest;
 import com.orderops.api.dto.CreateOrderResponse;
 import com.orderops.api.dto.GetOrderResponse;
+import com.orderops.api.dto.OrderAuditEntryResponse;
 import com.orderops.api.dto.OrderSummaryResponse;
 import com.orderops.api.dto.PageResponse;
 import com.orderops.api.service.OrderService;
@@ -14,6 +15,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/orders")
@@ -61,6 +64,17 @@ public class OrderController {
     @GetMapping("/{orderId}")
     public GetOrderResponse getOrder(@PathVariable String orderId) {
         return orderService.getOrder(orderId);
+    }
+
+    /**
+     * The order's recorded state transitions, oldest first.
+     *
+     * <p>This is the timeline the order detail page renders, and the audit trail an operator
+     * reads to see why an order failed.
+     */
+    @GetMapping("/{orderId}/audit")
+    public List<OrderAuditEntryResponse> getOrderAudit(@PathVariable String orderId) {
+        return orderService.getOrderAudit(orderId);
     }
 
     /**

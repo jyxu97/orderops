@@ -3,6 +3,7 @@ package com.orderops.api.service;
 import com.orderops.api.dto.CreateOrderRequest;
 import com.orderops.api.dto.CreateOrderResponse;
 import com.orderops.api.dto.GetOrderResponse;
+import com.orderops.api.dto.OrderAuditEntryResponse;
 import com.orderops.api.dto.OrderSummaryResponse;
 import com.orderops.api.dto.PageResponse;
 import com.orderops.api.exception.InsufficientInventoryException;
@@ -310,6 +311,25 @@ public class OrderService {
         return toResponse(loadOrder(orderId));
     }
 
+    /**
+     * The order's transition history, oldest first.
+     *
+     * <p>Checks the order exists first so an unknown ID is a 404 rather than an empty
+     * timeline that looks like an order with no history.
+     */
+    public List<OrderAuditEntryResponse> getOrderAudit(String orderId) {
+        loadOrder(orderId);
+
+        return auditLogRepository.findByOrderId(orderId).stream()
+            .map(entry -> OrderAuditEntryResponse.builder()
+                .timestamp(entry.getTimestamp())
+                .fromStatus(entry.getFromStatus())
+                .toStatus(entry.getToStatus())
+                .reason(entry.getReason())
+                .build())
+            .collect(Collectors.toList());
+    }
+
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
@@ -381,26 +401,12 @@ public class OrderService {
 
     private static PageResponse<OrderSummaryResponse> toPageResponse(Page<Order> page) {
         List<OrderSummaryResponse> summaries = page.getItems().stream()
-            .map(OrderService::toSummary)
+            .map(OrderSummaryResponse::from)
             .collect(Collectors.toList());
 
         return PageResponse.<OrderSummaryResponse>builder()
             .items(summaries)
             .nextCursor(page.getNextCursor())
-            .build();
-    }
-
-    private static OrderSummaryResponse toSummary(Order order) {
-        return OrderSummaryResponse.builder()
-            .orderId(order.getOrderId())
-            .customerId(order.getCustomerId())
-            .status(order.getStatus().name())
-            .itemCount(order.getItems().size())
-            .totalQuantity(order.getItems().stream().mapToInt(Order.OrderItem::getQuantity).sum())
-            .totalAmount(order.getTotalAmount())
-            .version(order.getVersion())
-            .createdAt(order.getCreatedAt())
-            .updatedAt(order.getUpdatedAt())
             .build();
     }
 }

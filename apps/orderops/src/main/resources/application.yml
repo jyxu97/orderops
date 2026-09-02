@@ -24,6 +24,11 @@ app:
     # Vite dev server by default; set CORS_ALLOWED_ORIGINS to the CloudFront domain in AWS.
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:4173}
 
+ops:
+  queue-health:
+    # Any DLQ message is a warning on its own, so only the main-queue backlog needs a threshold.
+    backlog-threshold: ${OPS_BACKLOG_THRESHOLD:100}
+
 simulator:
   payment:
     failure-mode: ${PAYMENT_FAILURE_MODE:NONE}
