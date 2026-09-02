@@ -221,6 +221,70 @@ Notes on how these are served:
   metric, not an SQS queue attribute; reading it from SQS would mean receiving a message, which
   advances its receive count and pushes it toward the DLQ. It is alarmed on in CloudWatch.
 
+### Real-time order tracking (WebSocket)
+
+STOMP over a native WebSocket at `/ws`. Clients subscribe; nothing accepts a client-sent
+message, so there is no `@MessageMapping` surface.
+
+```
+/topic/orders/{orderId}            → one order            (order detail page)
+/topic/customers/{customerId}/orders → one customer's orders (order list page)
+/topic/ops/orders                  → every order event    (operations dashboard)
+```
+
+Event payload:
+
+```json
+{
+  "type": "ORDER_STATUS_CHANGED",
+  "orderId": "8bc053f4-...",
+  "customerId": "customer-1",
+  "previousStatus": "PAYMENT_PROCESSING",
+  "status": "PAYMENT_SUCCEEDED",
+  "reason": "Payment authorized",
+  "occurredAt": "2026-09-02T...",
+  "committedAtEpochMilli": 1756...
+}
+```
+
+#### Why events travel through Redis
+
+```
+Fulfillment worker (separate ECS task)
+      │  state committed to DynamoDB
+      ▼
+Redis Pub/Sub  "orderops:order-events"
+      │
+      ▼
+every API task subscribes
+      │
+      ▼
+STOMP broker → connected browsers
+```
+
+The worker is a different process from the API, so it has no WebSocket sessions to push to —
+Redis is the only path by which its transitions can reach a browser. Events raised by the API
+itself go through Redis too, rather than straight to the local broker: the simple broker keeps
+subscriptions in one instance's heap, so a locally-broadcast event would only reach the clients
+that happened to land on the replica that produced it.
+
+#### Design properties
+
+- **Events are hints, not truth.** `publish` never fails the caller. The order is already
+  committed in DynamoDB; failing a checkout because a notification could not be sent would
+  trade a cosmetic problem for a real one. The UI refetches over REST after reconnecting rather
+  than assuming a gap-free stream.
+- **Published only after the write commits**, so a subscriber never sees a status that a
+  subsequent read of DynamoDB would contradict.
+- **Subscriptions are allowlisted.** A `ChannelInterceptor` drops any SUBSCRIBE frame naming a
+  destination outside the three shapes above — without it, one client could subscribe to
+  `/topic/**` and watch every order in the system. Honest limitation: this constrains the
+  *shape* of a subscription, not the *identity* behind it. Anyone holding an order ID can watch
+  that order and the ops topic is open; real per-customer authorization needs an authenticated
+  principal on the STOMP session, and authentication is out of scope for this project.
+- **A malformed payload does not kill the listener** — it is counted and discarded so the next
+  event still lands.
+
 ### Metrics
 
 ```
@@ -229,6 +293,10 @@ GET /actuator/metrics
 GET /actuator/metrics/orders.created
 GET /actuator/metrics/fulfillment.fulfilled
 GET /actuator/metrics/fulfillment.transient_failure
+GET /actuator/metrics/realtime.events.published
+GET /actuator/metrics/realtime.events.broadcast
+GET /actuator/metrics/realtime.connections.active
+GET /actuator/metrics/realtime.subscriptions.rejected
 ```
 
 ---

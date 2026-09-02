@@ -5,6 +5,8 @@ import com.orderops.api.repository.DynamoDbLocalProcess;
 import com.orderops.api.repository.DynamoDbTestBase;
 import com.orderops.api.repository.InventoryRepository;
 import com.orderops.api.repository.OrderRepository;
+import com.orderops.realtime.OrderEventPublisher;
+import com.orderops.shared.event.OrderStatusEvent;
 import com.orderops.shared.model.Inventory;
 import com.orderops.shared.model.Order;
 import com.orderops.shared.state.OrderStateMachine;
@@ -13,6 +15,8 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mockito;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
@@ -37,6 +41,7 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
     private PaymentSimulator paymentSimulator;
     private ShipmentSimulator shipmentSimulator;
     private SimpleMeterRegistry meterRegistry;
+    private OrderEventPublisher eventPublisher;
     private OrderFulfillmentService fulfillmentService;
 
     @BeforeEach
@@ -61,12 +66,13 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
         ReflectionTestUtils.setField(shipmentSimulator, "transientFailsRemaining", new AtomicInteger(Integer.MAX_VALUE));
 
         meterRegistry = new SimpleMeterRegistry();
+        eventPublisher = Mockito.mock(OrderEventPublisher.class);
 
         fulfillmentService = new OrderFulfillmentService(
             orderRepository, auditLogRepository,
             new OrderStateMachine(),
             paymentSimulator, shipmentSimulator,
-            meterRegistry);
+            meterRegistry, eventPublisher);
     }
 
     @Test
@@ -195,6 +201,36 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
         Order result = orderRepository.findById(order.getOrderId()).orElseThrow();
         assertEquals(0, new BigDecimal("9.99").compareTo(result.getTotalAmount()));
         assertEquals(0, new BigDecimal("9.99").compareTo(result.getItems().get(0).getUnitPrice()));
+    }
+
+
+    @Test
+    void fulfill_publishesOneEventPerCommittedTransition() {
+        Order order = seedOrder();
+
+        fulfillmentService.fulfill(order.getOrderId());
+
+        ArgumentCaptor<OrderStatusEvent> captor = ArgumentCaptor.forClass(OrderStatusEvent.class);
+        Mockito.verify(eventPublisher, Mockito.times(4)).publish(captor.capture());
+
+        assertEquals(
+            List.of("PAYMENT_PROCESSING", "PAYMENT_SUCCEEDED", "SHIPMENT_PROCESSING", "FULFILLED"),
+            captor.getAllValues().stream().map(OrderStatusEvent::getStatus).toList());
+
+        OrderStatusEvent first = captor.getAllValues().get(0);
+        assertEquals("INVENTORY_RESERVED", first.getPreviousStatus());
+        assertEquals(order.getCustomerId(), first.getCustomerId());
+        assertTrue(first.getCommittedAtEpochMilli() > 0, "events must carry a commit timestamp");
+    }
+
+    @Test
+    void fulfill_skippedOrder_publishesNothing() {
+        Order order = seedOrder();
+        orderRepository.updateStatus(order.getOrderId(), OrderStatus.CANCELLED, order.getVersion());
+
+        fulfillmentService.fulfill(order.getOrderId());
+
+        Mockito.verifyNoInteractions(eventPublisher);
     }
 
     private Order seedOrder() {

@@ -13,6 +13,8 @@ import com.orderops.api.repository.AuditLogRepository;
 import com.orderops.api.repository.IdempotencyRepository;
 import com.orderops.api.repository.InventoryRepository;
 import com.orderops.api.repository.OrderRepository;
+import com.orderops.realtime.OrderEventPublisher;
+import com.orderops.shared.event.OrderStatusEvent;
 import com.orderops.shared.exception.InvalidStateTransitionException;
 import com.orderops.shared.model.IdempotencyRecord;
 import com.orderops.shared.model.Inventory;
@@ -55,6 +57,7 @@ public class OrderService {
     private final OrderStateMachine stateMachine;
     private final IdempotencyService idempotencyService;
     private final SqsPublisher sqsPublisher;
+    private final OrderEventPublisher eventPublisher;
     private final MeterRegistry meterRegistry;
     private final DynamoDbClient dynamoDb;
 
@@ -226,7 +229,12 @@ public class OrderService {
             idempotencyService.cacheResponseInRedis(idempotencyKey, requestHash, response);
         }
 
-        // 9. Publish to SQS for async fulfillment
+        // 9. Notify subscribers that the order exists and its stock is held
+        eventPublisher.publish(OrderStatusEvent.statusChanged(
+            orderId, request.getCustomerId(),
+            OrderStatus.CREATED, OrderStatus.INVENTORY_RESERVED, "Order created"));
+
+        // 10. Publish to SQS for async fulfillment
         sqsPublisher.publishOrderCreated(orderId);
 
         return response;
@@ -284,6 +292,10 @@ public class OrderService {
         log.info("Order {} cancelled from {}, released {} line item(s)",
             orderId, order.getStatus(), order.getItems().size());
         meterRegistry.counter("orders.cancelled").increment();
+
+        eventPublisher.publish(OrderStatusEvent.statusChanged(
+            orderId, order.getCustomerId(),
+            order.getStatus(), OrderStatus.CANCELLED, "Order cancelled, reserved inventory released"));
 
         return toResponse(Order.builder()
             .orderId(order.getOrderId())

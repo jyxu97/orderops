@@ -24,6 +24,11 @@ app:
     # Vite dev server by default; set CORS_ALLOWED_ORIGINS to the CloudFront domain in AWS.
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:4173}
 
+realtime:
+  redis-bridge:
+    # The API subscribes to the Redis order-event channel to fan events out over WebSocket.
+    enabled: ${REALTIME_REDIS_BRIDGE_ENABLED:true}
+
 ops:
   queue-health:
     # Any DLQ message is a warning on its own, so only the main-queue backlog needs a threshold.

@@ -2,6 +2,8 @@ package com.orderops.worker;
 
 import com.orderops.api.repository.AuditLogRepository;
 import com.orderops.api.repository.OrderRepository;
+import com.orderops.realtime.OrderEventPublisher;
+import com.orderops.shared.event.OrderStatusEvent;
 import com.orderops.shared.model.Order;
 import com.orderops.shared.model.OrderAuditLog;
 import com.orderops.shared.state.OrderStateMachine;
@@ -41,6 +43,7 @@ public class OrderFulfillmentService {
     private final PaymentSimulator paymentSimulator;
     private final ShipmentSimulator shipmentSimulator;
     private final MeterRegistry meterRegistry;
+    private final OrderEventPublisher eventPublisher;
 
     public void fulfill(String orderId) {
         Order order = orderRepository.findById(orderId)
@@ -128,6 +131,11 @@ public class OrderFulfillmentService {
             .build());
 
         log.info("Order {} {} → {}", order.getOrderId(), order.getStatus(), newStatus);
+
+        // Published only after the write committed, so a subscriber never sees a status that
+        // a subsequent read of DynamoDB would contradict.
+        eventPublisher.publish(OrderStatusEvent.statusChanged(
+            order.getOrderId(), order.getCustomerId(), order.getStatus(), newStatus, reason));
 
         return Order.builder()
             .orderId(order.getOrderId())
