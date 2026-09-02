@@ -3,14 +3,20 @@ package com.orderops.api.controller;
 import com.orderops.api.dto.CreateOrderRequest;
 import com.orderops.api.dto.CreateOrderResponse;
 import com.orderops.api.dto.GetOrderResponse;
+import com.orderops.api.dto.OrderSummaryResponse;
+import com.orderops.api.dto.PageResponse;
 import com.orderops.api.service.OrderService;
+import com.orderops.shared.state.OrderStatus;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
-@RequestMapping("/orders")
+@RequestMapping("/api/v1/orders")
 @RequiredArgsConstructor
 public class OrderController {
 
@@ -18,7 +24,7 @@ public class OrderController {
 
     @PostMapping
     public ResponseEntity<CreateOrderResponse> createOrder(
-        @RequestBody CreateOrderRequest request,
+        @Valid @RequestBody CreateOrderRequest request,
         @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey
     ) {
         CreateOrderResponse response = orderService.createOrder(request, idempotencyKey);
@@ -26,8 +32,42 @@ public class OrderController {
         return ResponseEntity.status(status).body(response);
     }
 
+    /**
+     * Lists orders filtered by exactly one of {@code customerId} or {@code status}.
+     *
+     * <p>Both filters are backed by a GSI, so neither degrades into a table scan. Requiring
+     * exactly one of them keeps that guarantee: an unfiltered list has no index to serve it.
+     */
+    @GetMapping
+    public PageResponse<OrderSummaryResponse> listOrders(
+        @RequestParam(required = false) String customerId,
+        @RequestParam(required = false) String status,
+        @RequestParam(defaultValue = "25") @Min(1) @Max(100) int limit,
+        @RequestParam(required = false) String cursor
+    ) {
+        boolean byCustomer = customerId != null && !customerId.isBlank();
+        boolean byStatus   = status != null && !status.isBlank();
+
+        if (byCustomer == byStatus) {
+            throw new IllegalArgumentException(
+                "Specify exactly one of 'customerId' or 'status'");
+        }
+
+        return byCustomer
+            ? orderService.listOrdersByCustomer(customerId, limit, cursor)
+            : orderService.listOrdersByStatus(parseStatus(status), limit, cursor);
+    }
+
     @GetMapping("/{orderId}")
     public GetOrderResponse getOrder(@PathVariable String orderId) {
         return orderService.getOrder(orderId);
+    }
+
+    private static OrderStatus parseStatus(String raw) {
+        try {
+            return OrderStatus.valueOf(raw.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Unknown order status: " + raw);
+        }
     }
 }

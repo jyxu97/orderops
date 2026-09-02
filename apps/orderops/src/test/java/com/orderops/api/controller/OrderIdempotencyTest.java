@@ -71,7 +71,7 @@ class OrderIdempotencyTest {
         Mockito.when(ops.get(anyString())).thenReturn(null);
 
         // Seed fresh inventory before each test
-        mockMvc.perform(post("/inventory/seed")
+        mockMvc.perform(post("/api/v1/inventory/seed")
             .contentType(MediaType.APPLICATION_JSON)
             .content("""
                 {"itemId": "%s", "quantity": 100}
@@ -89,7 +89,7 @@ class OrderIdempotencyTest {
             """.formatted(ITEM_ID);
 
         // First request: creates the order
-        String firstResponse = mockMvc.perform(post("/orders")
+        String firstResponse = mockMvc.perform(post("/api/v1/orders")
                 .header("Idempotency-Key", idempotencyKey)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body))
@@ -100,7 +100,7 @@ class OrderIdempotencyTest {
         String firstOrderId = objectMapper.readTree(firstResponse).get("orderId").asText();
 
         // Second request with identical key and body: returns 200 with the same order
-        mockMvc.perform(post("/orders")
+        mockMvc.perform(post("/api/v1/orders")
                 .header("Idempotency-Key", idempotencyKey)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body))
@@ -128,14 +128,14 @@ class OrderIdempotencyTest {
             """.formatted(ITEM_ID);
 
         // First request succeeds
-        mockMvc.perform(post("/orders")
+        mockMvc.perform(post("/api/v1/orders")
                 .header("Idempotency-Key", idempotencyKey)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body1))
             .andExpect(status().isCreated());
 
         // Second request with same key but different body → 409 Conflict
-        mockMvc.perform(post("/orders")
+        mockMvc.perform(post("/api/v1/orders")
                 .header("Idempotency-Key", idempotencyKey)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body2))
@@ -152,13 +152,13 @@ class OrderIdempotencyTest {
             }
             """.formatted(ITEM_ID);
 
-        String resp1 = mockMvc.perform(post("/orders")
+        String resp1 = mockMvc.perform(post("/api/v1/orders")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body))
             .andExpect(status().isCreated())
             .andReturn().getResponse().getContentAsString();
 
-        String resp2 = mockMvc.perform(post("/orders")
+        String resp2 = mockMvc.perform(post("/api/v1/orders")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body))
             .andExpect(status().isCreated())

@@ -9,7 +9,7 @@ ITEM_ID="failure-test-item"
 echo "=== Failure Injection Test ==="
 echo "Seeding inventory: itemId=$ITEM_ID quantity=10"
 
-curl -sf -X POST "$BASE_URL/inventory/seed" \
+curl -sf -X POST "$BASE_URL/api/v1/inventory/seed" \
   -H 'Content-Type: application/json' \
   -d "{\"itemId\": \"$ITEM_ID\", \"quantity\": 10}"
 echo

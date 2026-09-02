@@ -8,7 +8,7 @@ QUANTITY="${3:-${QUANTITY:-100}}"
 
 echo "Seeding inventory: itemId=$ITEM_ID quantity=$QUANTITY"
 
-curl -sf -X POST "$BASE_URL/inventory/seed" \
+curl -sf -X POST "$BASE_URL/api/v1/inventory/seed" \
   -H 'Content-Type: application/json' \
   -d "{\"itemId\": \"$ITEM_ID\", \"quantity\": $QUANTITY}"
 

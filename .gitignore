@@ -9,11 +9,8 @@ target/
 # macOS
 .DS_Store
 
-# Claude Code project instructions (internal tooling, not project code)
-CLAUDE.md
-
 # Design document (local reference only)
-design-doc.md
+docs/
 
 # Test artifacts
 dynamodb-local-metadata.json

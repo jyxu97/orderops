@@ -65,7 +65,7 @@ class OrderControllerTest {
         Mockito.when(ops.get(anyString())).thenReturn(null);
 
         // Reset stock to 10 before each test
-        mockMvc.perform(post("/inventory/seed")
+        mockMvc.perform(post("/api/v1/inventory/seed")
             .contentType(MediaType.APPLICATION_JSON)
             .content("""
                 {"itemId": "%s", "quantity": 10}
@@ -81,7 +81,7 @@ class OrderControllerTest {
             }
             """.formatted(ITEM_ID);
 
-        mockMvc.perform(post("/orders")
+        mockMvc.perform(post("/api/v1/orders")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body))
             .andExpect(status().isCreated())
@@ -98,7 +98,7 @@ class OrderControllerTest {
             }
             """.formatted(ITEM_ID);
 
-        mockMvc.perform(post("/orders")
+        mockMvc.perform(post("/api/v1/orders")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body))
             .andExpect(status().isConflict())
@@ -114,7 +114,7 @@ class OrderControllerTest {
             }
             """.formatted(ITEM_ID);
 
-        String createResult = mockMvc.perform(post("/orders")
+        String createResult = mockMvc.perform(post("/api/v1/orders")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(createBody))
             .andExpect(status().isCreated())
@@ -122,7 +122,7 @@ class OrderControllerTest {
 
         String orderId = objectMapper.readTree(createResult).get("orderId").asText();
 
-        mockMvc.perform(get("/orders/" + orderId))
+        mockMvc.perform(get("/api/v1/orders/" + orderId))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.orderId").value(orderId))
             .andExpect(jsonPath("$.customerId").value("customer-3"))
@@ -131,7 +131,7 @@ class OrderControllerTest {
 
     @Test
     void getOrder_nonExistent_returns404() throws Exception {
-        mockMvc.perform(get("/orders/order-does-not-exist"))
+        mockMvc.perform(get("/api/v1/orders/order-does-not-exist"))
             .andExpect(status().isNotFound())
             .andExpect(jsonPath("$.status").value(404));
     }
@@ -146,7 +146,7 @@ class OrderControllerTest {
             """.formatted(ITEM_ID);
 
         // First request → 201
-        String firstResult = mockMvc.perform(post("/orders")
+        String firstResult = mockMvc.perform(post("/api/v1/orders")
                 .contentType(MediaType.APPLICATION_JSON)
                 .header("Idempotency-Key", "test-replay-key")
                 .content(body))
@@ -164,12 +164,138 @@ class OrderControllerTest {
         Mockito.when(ops.get(anyString())).thenReturn(null);
 
         // Second request with same key → 200, same orderId, replayed=true
-        mockMvc.perform(post("/orders")
+        mockMvc.perform(post("/api/v1/orders")
                 .contentType(MediaType.APPLICATION_JSON)
                 .header("Idempotency-Key", "test-replay-key")
                 .content(body))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.orderId").value(orderId))
             .andExpect(jsonPath("$.replayed").value(true));
+    }
+
+    @Test
+    void postOrders_missingCustomerId_returns400WithFieldError() throws Exception {
+        String body = """
+            {
+              "items": [{"itemId": "%s", "quantity": 1}]
+            }
+            """.formatted(ITEM_ID);
+
+        mockMvc.perform(post("/api/v1/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.status").value(400))
+            .andExpect(jsonPath("$.fieldErrors.customerId").isNotEmpty());
+    }
+
+    @Test
+    void postOrders_zeroQuantity_returns400() throws Exception {
+        String body = """
+            {
+              "customerId": "customer-invalid",
+              "items": [{"itemId": "%s", "quantity": 0}]
+            }
+            """.formatted(ITEM_ID);
+
+        mockMvc.perform(post("/api/v1/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.fieldErrors['items[0].quantity']").isNotEmpty());
+    }
+
+    @Test
+    void postOrders_emptyItems_returns400() throws Exception {
+        mockMvc.perform(post("/api/v1/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"customerId": "customer-invalid", "items": []}
+                    """))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.fieldErrors.items").isNotEmpty());
+    }
+
+    @Test
+    void listOrders_byCustomerId_returnsThatCustomersOrders() throws Exception {
+        String customerId = "customer-list-" + java.util.UUID.randomUUID();
+        String body = """
+            {
+              "customerId": "%s",
+              "items": [{"itemId": "%s", "quantity": 1}]
+            }
+            """.formatted(customerId, ITEM_ID);
+
+        String created = mockMvc.perform(post("/api/v1/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+            .andExpect(status().isCreated())
+            .andReturn().getResponse().getContentAsString();
+        String orderId = objectMapper.readTree(created).get("orderId").asText();
+
+        mockMvc.perform(get("/api/v1/orders").param("customerId", customerId))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items.length()").value(1))
+            .andExpect(jsonPath("$.items[0].orderId").value(orderId))
+            .andExpect(jsonPath("$.items[0].totalQuantity").value(1))
+            .andExpect(jsonPath("$.nextCursor").doesNotExist());
+    }
+
+    @Test
+    void listOrders_byStatus_returnsOnlyMatchingStatus() throws Exception {
+        mockMvc.perform(post("/api/v1/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"customerId": "customer-status", "items": [{"itemId": "%s", "quantity": 1}]}
+                    """.formatted(ITEM_ID)))
+            .andExpect(status().isCreated());
+
+        mockMvc.perform(get("/api/v1/orders").param("status", "INVENTORY_RESERVED"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[0].status").value("INVENTORY_RESERVED"));
+    }
+
+    @Test
+    void listOrders_withoutFilter_returns400() throws Exception {
+        mockMvc.perform(get("/api/v1/orders"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.status").value(400));
+    }
+
+    @Test
+    void listOrders_withBothFilters_returns400() throws Exception {
+        mockMvc.perform(get("/api/v1/orders")
+                .param("customerId", "customer-1")
+                .param("status", "FULFILLED"))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void listOrders_unknownStatus_returns400() throws Exception {
+        mockMvc.perform(get("/api/v1/orders").param("status", "NOT_A_STATUS"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("NOT_A_STATUS")));
+    }
+
+    @Test
+    void listOrders_limitAboveMaximum_returns400() throws Exception {
+        mockMvc.perform(get("/api/v1/orders")
+                .param("customerId", "customer-1")
+                .param("limit", "500"))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void listInventory_returnsSeededItem() throws Exception {
+        mockMvc.perform(get("/api/v1/inventory"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$[?(@.itemId=='%s')]".formatted(ITEM_ID)).exists());
+    }
+
+    @Test
+    void getInventory_unknownItem_returns404() throws Exception {
+        mockMvc.perform(get("/api/v1/inventory/does-not-exist"))
+            .andExpect(status().isNotFound())
+            .andExpect(jsonPath("$.status").value(404));
     }
 }

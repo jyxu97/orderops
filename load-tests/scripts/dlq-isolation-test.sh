@@ -40,7 +40,7 @@ sleep 2
 
 # Seed inventory
 echo "[2/6] Seeding inventory (qty=$POISON_COUNT)..."
-curl -sf -X POST "$BASE_URL/inventory/seed" \
+curl -sf -X POST "$BASE_URL/api/v1/inventory/seed" \
   -H "Content-Type: application/json" \
   -d "{\"itemId\":\"$ITEM_ID\",\"itemName\":\"DLQ Test Item\",\"quantity\":$POISON_COUNT}" \
   > /dev/null
@@ -70,7 +70,7 @@ echo "[4/6] Submitting $POISON_COUNT poison orders..."
 ORDER_IDS=()
 for i in $(seq 1 $POISON_COUNT); do
   KEY="dlq-key-$ITEM_ID-$i"
-  RESP=$(curl -sf -X POST "$BASE_URL/orders" \
+  RESP=$(curl -sf -X POST "$BASE_URL/api/v1/orders" \
     -H "Content-Type: application/json" \
     -H "Idempotency-Key: $KEY" \
     -d "{\"customerId\":\"customer-$i\",\"items\":[{\"itemId\":\"$ITEM_ID\",\"quantity\":1}]}")

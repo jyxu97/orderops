@@ -1,6 +1,7 @@
 package com.orderops.api.repository;
 
 import com.orderops.shared.model.Order;
+import com.orderops.shared.model.Page;
 import com.orderops.shared.state.OrderStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -19,6 +20,18 @@ import java.util.stream.Collectors;
 @Repository
 @RequiredArgsConstructor
 public class OrderRepository {
+
+    /** GSI for customer order history: customerId (HASH) + createdAt (RANGE). */
+    public static final String GSI_CUSTOMER_CREATED_AT = "GSI1_CustomerCreatedAt";
+
+    /**
+     * GSI for the operations dashboard: status (HASH) + updatedAt (RANGE).
+     *
+     * <p>Cardinality of the partition key is low (one partition per status), so this index is
+     * only suitable for the modest read volume of an internal dashboard. A production system
+     * with high ops traffic would shard the key (e.g. {@code status#<bucket>}).
+     */
+    public static final String GSI_STATUS_UPDATED_AT = "GSI2_StatusUpdatedAt";
 
     private final DynamoDbClient dynamoDb;
 
@@ -42,6 +55,16 @@ public class OrderRepository {
             return Optional.empty();
         }
         return Optional.of(mapToOrder(resp.item()));
+    }
+
+    /** Most recent orders for a customer first, via {@link #GSI_CUSTOMER_CREATED_AT}. */
+    public Page<Order> findByCustomerId(String customerId, int limit, String cursor) {
+        return query(GSI_CUSTOMER_CREATED_AT, "customerId", customerId, limit, cursor);
+    }
+
+    /** Most recently updated orders in a given status first, via {@link #GSI_STATUS_UPDATED_AT}. */
+    public Page<Order> findByStatus(OrderStatus status, int limit, String cursor) {
+        return query(GSI_STATUS_UPDATED_AT, "status", status.name(), limit, cursor);
     }
 
     /**
@@ -77,6 +100,32 @@ public class OrderRepository {
             .item(toItem(order))
             .conditionExpression("attribute_not_exists(orderId)")
             .build();
+    }
+
+    // -------------------------------------------------------------------------
+    // Private helpers
+    // -------------------------------------------------------------------------
+
+    /** Runs a descending (newest-first) GSI query with cursor-based pagination. */
+    private Page<Order> query(String indexName, String partitionKey, String partitionValue,
+                              int limit, String cursor) {
+        var builder = QueryRequest.builder()
+            .tableName(tableName)
+            .indexName(indexName)
+            .keyConditionExpression("#pk = :pk")
+            .expressionAttributeNames(Map.of("#pk", partitionKey))
+            .expressionAttributeValues(Map.of(":pk", AttributeValue.fromS(partitionValue)))
+            .scanIndexForward(false)
+            .limit(limit);
+
+        Cursors.decode(cursor).ifPresent(builder::exclusiveStartKey);
+
+        QueryResponse resp = dynamoDb.query(builder.build());
+        List<Order> orders = resp.items().stream()
+            .map(this::mapToOrder)
+            .collect(Collectors.toList());
+
+        return Page.of(orders, Cursors.encode(resp.lastEvaluatedKey()));
     }
 
     private Map<String, AttributeValue> toItem(Order order) {

@@ -29,7 +29,7 @@ echo ""
 
 # 1. Seed inventory
 echo "[1/5] Seeding inventory (qty=$ORDER_COUNT)..."
-curl -sf -X POST "$API_BASE_URL/inventory/seed" \
+curl -sf -X POST "$API_BASE_URL/api/v1/inventory/seed" \
   -H "Content-Type: application/json" \
   -d "{\"itemId\":\"$ITEM_ID\",\"itemName\":\"Transient Test Item\",\"quantity\":$ORDER_COUNT}" \
   > /dev/null
@@ -59,7 +59,7 @@ echo "[3/5] Submitting $ORDER_COUNT orders..."
 ORDER_IDS=()
 for i in $(seq 1 $ORDER_COUNT); do
   KEY="transient-key-$ITEM_ID-$i"
-  RESP=$(curl -sf -X POST "$API_BASE_URL/orders" \
+  RESP=$(curl -sf -X POST "$API_BASE_URL/api/v1/orders" \
     -H "Content-Type: application/json" \
     -H "Idempotency-Key: $KEY" \
     -d "{\"customerId\":\"customer-$i\",\"items\":[{\"itemId\":\"$ITEM_ID\",\"quantity\":1}]}")
@@ -100,7 +100,7 @@ MANUAL_REVIEW=0
 STILL_PROCESSING=0
 
 for OID in "${ORDER_IDS[@]}"; do
-  STATUS=$(curl -sf "$API_BASE_URL/orders/$OID" \
+  STATUS=$(curl -sf "$API_BASE_URL/api/v1/orders/$OID" \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null || echo "UNKNOWN")
   case "$STATUS" in
     FULFILLED)            ((FULFILLED++)) ;;

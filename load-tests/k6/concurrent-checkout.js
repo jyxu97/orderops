@@ -43,7 +43,7 @@ export default function () {
     items: [{ itemId: ITEM_ID, quantity: 1 }],
   });
 
-  const res = http.post(`${BASE_URL}/orders`, payload, {
+  const res = http.post(`${BASE_URL}/api/v1/orders`, payload, {
     headers: { 'Content-Type': 'application/json' },
   });
 

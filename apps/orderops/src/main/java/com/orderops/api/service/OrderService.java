@@ -3,6 +3,8 @@ package com.orderops.api.service;
 import com.orderops.api.dto.CreateOrderRequest;
 import com.orderops.api.dto.CreateOrderResponse;
 import com.orderops.api.dto.GetOrderResponse;
+import com.orderops.api.dto.OrderSummaryResponse;
+import com.orderops.api.dto.PageResponse;
 import com.orderops.api.exception.InsufficientInventoryException;
 import com.orderops.api.exception.OrderNotFoundException;
 import com.orderops.api.repository.AuditLogRepository;
@@ -12,6 +14,7 @@ import com.orderops.api.repository.OrderRepository;
 import com.orderops.shared.model.IdempotencyRecord;
 import com.orderops.shared.model.Order;
 import com.orderops.shared.model.OrderAuditLog;
+import com.orderops.shared.model.Page;
 import com.orderops.shared.state.OrderStateMachine;
 import com.orderops.shared.state.OrderStatus;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -196,6 +199,16 @@ public class OrderService {
         return response;
     }
 
+    /** Order history for one customer, newest first. */
+    public PageResponse<OrderSummaryResponse> listOrdersByCustomer(String customerId, int limit, String cursor) {
+        return toPageResponse(orderRepository.findByCustomerId(customerId, limit, cursor));
+    }
+
+    /** Orders currently in one status, most recently updated first. */
+    public PageResponse<OrderSummaryResponse> listOrdersByStatus(OrderStatus status, int limit, String cursor) {
+        return toPageResponse(orderRepository.findByStatus(status, limit, cursor));
+    }
+
     public GetOrderResponse getOrder(String orderId) {
         Order order = orderRepository.findById(orderId)
             .orElseThrow(() -> new OrderNotFoundException(orderId));
@@ -212,6 +225,30 @@ public class OrderService {
             .customerId(order.getCustomerId())
             .items(items)
             .status(order.getStatus().name())
+            .version(order.getVersion())
+            .createdAt(order.getCreatedAt())
+            .updatedAt(order.getUpdatedAt())
+            .build();
+    }
+
+    private static PageResponse<OrderSummaryResponse> toPageResponse(Page<Order> page) {
+        List<OrderSummaryResponse> summaries = page.getItems().stream()
+            .map(OrderService::toSummary)
+            .collect(Collectors.toList());
+
+        return PageResponse.<OrderSummaryResponse>builder()
+            .items(summaries)
+            .nextCursor(page.getNextCursor())
+            .build();
+    }
+
+    private static OrderSummaryResponse toSummary(Order order) {
+        return OrderSummaryResponse.builder()
+            .orderId(order.getOrderId())
+            .customerId(order.getCustomerId())
+            .status(order.getStatus().name())
+            .itemCount(order.getItems().size())
+            .totalQuantity(order.getItems().stream().mapToInt(Order.OrderItem::getQuantity).sum())
             .version(order.getVersion())
             .createdAt(order.getCreatedAt())
             .updatedAt(order.getUpdatedAt())

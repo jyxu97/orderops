@@ -2,11 +2,15 @@ package com.orderops.api.service;
 
 import com.orderops.api.dto.GetInventoryResponse;
 import com.orderops.api.dto.SeedInventoryRequest;
+import com.orderops.api.exception.InventoryNotFoundException;
 import com.orderops.api.repository.InventoryRepository;
 import com.orderops.shared.model.Inventory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+
+import java.util.List;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -32,7 +36,14 @@ public class InventoryService {
     public GetInventoryResponse getInventory(String itemId) {
         return inventoryRepository.findById(itemId)
             .map(this::toResponse)
-            .orElseThrow(() -> new RuntimeException("Inventory not found: " + itemId));
+            .orElseThrow(() -> new InventoryNotFoundException(itemId));
+    }
+
+    /** The full catalog, for the create-order page's item picker. */
+    public List<GetInventoryResponse> listInventory(int limit) {
+        return inventoryRepository.findAll(limit).stream()
+            .map(this::toResponse)
+            .collect(Collectors.toList());
     }
 
     private GetInventoryResponse toResponse(Inventory inv) {

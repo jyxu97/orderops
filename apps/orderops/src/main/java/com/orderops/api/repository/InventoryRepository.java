@@ -8,9 +8,12 @@ import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Repository
@@ -48,6 +51,25 @@ public class InventoryRepository {
             return Optional.empty();
         }
         return Optional.of(mapToInventory(resp.item()));
+    }
+
+    /**
+     * Returns the full inventory catalog, sorted by itemId.
+     *
+     * <p>A Scan is acceptable here: the catalog is small and bounded (this is a demo storefront,
+     * not a product search service). {@code limit} caps the number of items read so a growing
+     * table can never turn this into an unbounded scan.
+     */
+    public List<Inventory> findAll(int limit) {
+        var resp = dynamoDb.scan(ScanRequest.builder()
+            .tableName(tableName)
+            .limit(limit)
+            .build());
+
+        return resp.items().stream()
+            .map(this::mapToInventory)
+            .sorted(Comparator.comparing(Inventory::getItemId))
+            .collect(Collectors.toList());
     }
 
     /**

@@ -29,7 +29,7 @@ echo ""
 
 # 1. Seed inventory
 echo "[1/4] Seeding inventory (qty=$INITIAL_QTY)..."
-curl -sf -X POST "$BASE_URL/inventory/seed" \
+curl -sf -X POST "$BASE_URL/api/v1/inventory/seed" \
   -H "Content-Type: application/json" \
   -d "{\"itemId\":\"$ITEM_ID\",\"itemName\":\"Idem Test\",\"quantity\":$INITIAL_QTY}" > /dev/null
 echo "     Done."
@@ -42,7 +42,7 @@ trap "rm -rf $TMPDIR_IDEM" EXIT
 echo "[2/4] Phase 1: Creating $NUM_KEYS original orders..."
 for i in $(seq 1 $NUM_KEYS); do
   KEY="idem-key-$ITEM_ID-$i"
-  RESP=$(curl -sf -X POST "$BASE_URL/orders" \
+  RESP=$(curl -sf -X POST "$BASE_URL/api/v1/orders" \
     -H "Content-Type: application/json" \
     -H "Idempotency-Key: $KEY" \
     -d "{\"customerId\":\"cust-$i\",\"items\":[{\"itemId\":\"$ITEM_ID\",\"quantity\":1}]}")
@@ -61,7 +61,7 @@ for rep in $(seq 1 $REPEATS_PER_KEY); do
   for i in $(seq 1 $NUM_KEYS); do
     KEY="idem-key-$ITEM_ID-$i"
     EXPECTED=$(cat "$TMPDIR_IDEM/key-$i")
-    RESP=$(curl -sf -X POST "$BASE_URL/orders" \
+    RESP=$(curl -sf -X POST "$BASE_URL/api/v1/orders" \
       -H "Content-Type: application/json" \
       -H "Idempotency-Key: $KEY" \
       -d "{\"customerId\":\"cust-$i\",\"items\":[{\"itemId\":\"$ITEM_ID\",\"quantity\":1}]}" 2>/dev/null || echo "ERROR")
@@ -82,7 +82,7 @@ done
 
 # 4. Verify inventory deduction
 echo "[4/4] Verifying inventory deduction..."
-FINAL_AVAILABLE=$(curl -sf "$BASE_URL/inventory/$ITEM_ID" \
+FINAL_AVAILABLE=$(curl -sf "$BASE_URL/api/v1/inventory/$ITEM_ID" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['availableQuantity'])")
 EXPECTED_AVAILABLE=$((INITIAL_QTY - NUM_KEYS))
 

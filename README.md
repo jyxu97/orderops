@@ -10,9 +10,9 @@ Built with Java 17, Spring Boot 3, DynamoDB, SQS, and Redis.
 ## Architecture
 
 ```
-┌──────────────┐   POST /orders    ┌─────────────────────────┐
+┌──────────────┐  POST /api/v1/…   ┌─────────────────────────┐
 │   Client     │ ───────────────▶  │   API Service (ECS)      │
-│              │   GET /orders/:id │                          │
+│              │  GET  /api/v1/…   │                          │
 │              │ ◀─────────────── │  OrderController         │
 └──────────────┘                   │  OrderService            │
                                    │  IdempotencyService      │
@@ -103,10 +103,12 @@ make test
 
 ## API Reference
 
+All endpoints are versioned under `/api/v1`.
+
 ### Create order
 
 ```
-POST /orders
+POST /api/v1/orders
 Idempotency-Key: <uuid>   (optional)
 
 {
@@ -115,23 +117,39 @@ Idempotency-Key: <uuid>   (optional)
 }
 
 201 Created → { "orderId": "...", "status": "INVENTORY_RESERVED", "createdAt": "..." }
+200 OK      → idempotent replay of a previous request (same key, same body)
+400 Bad Request → validation failure, with a `fieldErrors` map
 409 Conflict → insufficient inventory, or idempotency key reused with a different body
 ```
 
 ### Get order
 
 ```
-GET /orders/{orderId}
+GET /api/v1/orders/{orderId}
 
 200 OK → { "orderId": "...", "customerId": "...", "status": "FULFILLED", ... }
 404 Not Found
 ```
 
-### Seed inventory (local / testing)
+### List orders
+
+Exactly one filter is required. Both are served by a GSI, so neither degrades into a scan.
 
 ```
-POST /inventory/seed
-{ "itemId": "widget-a", "quantity": 100 }
+GET /api/v1/orders?customerId=customer-1&limit=25&cursor=<opaque>
+GET /api/v1/orders?status=NEEDS_MANUAL_REVIEW&limit=25
+
+200 OK → { "items": [ { "orderId": "...", "status": "...", "totalQuantity": 3, ... } ],
+             "nextCursor": "<opaque>" }   // nextCursor absent = end of list
+400 Bad Request → neither or both filters supplied, unknown status, limit out of 1..100
+```
+
+### Inventory
+
+```
+GET  /api/v1/inventory?limit=50        → catalog listing
+GET  /api/v1/inventory/{itemId}        → 200 OK / 404 Not Found
+POST /api/v1/inventory/seed            → { "itemId": "widget-a", "quantity": 100 }
 ```
 
 ### Metrics

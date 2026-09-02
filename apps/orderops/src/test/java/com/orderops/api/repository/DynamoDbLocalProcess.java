@@ -10,7 +10,6 @@ import software.amazon.awssdk.services.dynamodb.model.*;
 
 import java.io.*;
 import java.net.ServerSocket;
-import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -121,7 +120,7 @@ public final class DynamoDbLocalProcess implements AutoCloseable {
         log.info("Started DynamoDB Local container id={} port={}", containerId.substring(0, 12), port);
 
         DynamoDbClient client = buildClient(port);
-        waitUntilReady(port);
+        waitUntilReady(client, port);
         createTables(client);
         return new DynamoDbLocalProcess(port, containerId, null, client);
     }
@@ -152,7 +151,7 @@ public final class DynamoDbLocalProcess implements AutoCloseable {
         log.info("Started DynamoDB Local JAR process pid={} port={}", proc.pid(), port);
 
         DynamoDbClient client = buildClient(port);
-        waitUntilReady(port);
+        waitUntilReady(client, port);
         createTables(client);
         return new DynamoDbLocalProcess(port, null, proc, client);
     }
@@ -250,22 +249,40 @@ public final class DynamoDbLocalProcess implements AutoCloseable {
         }
     }
 
-    private static void waitUntilReady(int port) throws InterruptedException {
+    /**
+     * Blocks until DynamoDB Local answers a real API call.
+     *
+     * <p>Probing with {@code ListTables} rather than a bare socket connect matters: the port
+     * starts accepting connections before the server can serve HTTP, and a request issued in
+     * that window fails with "Connection reset".
+     */
+    private static void waitUntilReady(DynamoDbClient client, int port) throws InterruptedException {
+        RuntimeException lastFailure = null;
         for (int i = 0; i < 120; i++) {
-            try (Socket ignored = new Socket("localhost", port)) {
+            try {
+                client.listTables(ListTablesRequest.builder().limit(1).build());
                 log.info("DynamoDB Local is ready on port {}", port);
                 return;
-            } catch (IOException e) {
+            } catch (RuntimeException e) {
+                lastFailure = e;
                 Thread.sleep(500);
             }
         }
-        throw new IllegalStateException("DynamoDB Local did not become ready on port " + port);
+        throw new IllegalStateException(
+            "DynamoDB Local did not become ready on port " + port, lastFailure);
     }
 
     private static void createTables(DynamoDbClient client) {
+        // Mirrors infra/dynamodb/create-tables.sh — keep the two in sync.
         createTable(client, "Orders",
-            List.of(attr("orderId", ScalarAttributeType.S)),
-            List.of(key("orderId", KeyType.HASH)));
+            List.of(attr("orderId",    ScalarAttributeType.S),
+                    attr("customerId", ScalarAttributeType.S),
+                    attr("status",     ScalarAttributeType.S),
+                    attr("createdAt",  ScalarAttributeType.S),
+                    attr("updatedAt",  ScalarAttributeType.S)),
+            List.of(key("orderId", KeyType.HASH)),
+            List.of(gsi("GSI1_CustomerCreatedAt", "customerId", "createdAt"),
+                    gsi("GSI2_StatusUpdatedAt",   "status",     "updatedAt")));
 
         createTable(client, "Inventory",
             List.of(attr("itemId", ScalarAttributeType.S)),
@@ -283,16 +300,34 @@ public final class DynamoDbLocalProcess implements AutoCloseable {
     private static void createTable(DynamoDbClient client, String name,
                                     List<AttributeDefinition> attrs,
                                     List<KeySchemaElement> keys) {
+        createTable(client, name, attrs, keys, List.of());
+    }
+
+    private static void createTable(DynamoDbClient client, String name,
+                                    List<AttributeDefinition> attrs,
+                                    List<KeySchemaElement> keys,
+                                    List<GlobalSecondaryIndex> indexes) {
         try {
-            client.createTable(CreateTableRequest.builder()
+            var request = CreateTableRequest.builder()
                 .tableName(name)
                 .attributeDefinitions(attrs)
                 .keySchema(keys)
-                .billingMode(BillingMode.PAY_PER_REQUEST)
-                .build());
+                .billingMode(BillingMode.PAY_PER_REQUEST);
+            if (!indexes.isEmpty()) {
+                request.globalSecondaryIndexes(indexes);
+            }
+            client.createTable(request.build());
         } catch (ResourceInUseException ignored) {
             // table already exists
         }
+    }
+
+    private static GlobalSecondaryIndex gsi(String indexName, String hashKey, String rangeKey) {
+        return GlobalSecondaryIndex.builder()
+            .indexName(indexName)
+            .keySchema(key(hashKey, KeyType.HASH), key(rangeKey, KeyType.RANGE))
+            .projection(Projection.builder().projectionType(ProjectionType.ALL).build())
+            .build();
     }
 
     private static AttributeDefinition attr(String name, ScalarAttributeType type) {
