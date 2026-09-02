@@ -10,6 +10,7 @@ import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -102,6 +103,34 @@ public class OrderRepository {
             .build();
     }
 
+    /**
+     * Returns an Update that moves an order to {@code newStatus}, for embedding in a transaction.
+     *
+     * <p>The condition pins both the version and the current status. Pinning the version alone
+     * would be enough for optimistic locking, but pinning the status as well makes the intent
+     * explicit and gives a caller retrying after a lost race an unambiguous signal.
+     */
+    public TransactWriteItem buildStatusTransitionTransactItem(
+        String orderId, OrderStatus expectedStatus, OrderStatus newStatus, long expectedVersion, String now) {
+
+        return TransactWriteItem.builder()
+            .update(Update.builder()
+                .tableName(tableName)
+                .key(Map.of("orderId", AttributeValue.fromS(orderId)))
+                .updateExpression("SET #st = :newStatus, #ver = :newVer, updatedAt = :now")
+                .conditionExpression("#ver = :expectedVer AND #st = :expectedStatus")
+                .expressionAttributeNames(Map.of("#st", "status", "#ver", "version"))
+                .expressionAttributeValues(Map.of(
+                    ":newStatus",      AttributeValue.fromS(newStatus.name()),
+                    ":expectedStatus", AttributeValue.fromS(expectedStatus.name()),
+                    ":newVer",         AttributeValue.fromN(String.valueOf(expectedVersion + 1)),
+                    ":expectedVer",    AttributeValue.fromN(String.valueOf(expectedVersion)),
+                    ":now",            AttributeValue.fromS(now)
+                ))
+                .build())
+            .build();
+    }
+
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
@@ -131,19 +160,21 @@ public class OrderRepository {
     private Map<String, AttributeValue> toItem(Order order) {
         List<AttributeValue> itemsAttr = order.getItems().stream()
             .map(i -> AttributeValue.fromM(Map.of(
-                "itemId",   AttributeValue.fromS(i.getItemId()),
-                "quantity", AttributeValue.fromN(String.valueOf(i.getQuantity()))
+                "itemId",    AttributeValue.fromS(i.getItemId()),
+                "quantity",  AttributeValue.fromN(String.valueOf(i.getQuantity())),
+                "unitPrice", AttributeValue.fromN(money(i.getUnitPrice()).toPlainString())
             )))
             .collect(Collectors.toList());
 
         return Map.of(
-            "orderId",    AttributeValue.fromS(order.getOrderId()),
-            "customerId", AttributeValue.fromS(order.getCustomerId()),
-            "items",      AttributeValue.fromL(itemsAttr),
-            "status",     AttributeValue.fromS(order.getStatus().name()),
-            "version",    AttributeValue.fromN(String.valueOf(order.getVersion())),
-            "createdAt",  AttributeValue.fromS(order.getCreatedAt()),
-            "updatedAt",  AttributeValue.fromS(order.getUpdatedAt())
+            "orderId",     AttributeValue.fromS(order.getOrderId()),
+            "customerId",  AttributeValue.fromS(order.getCustomerId()),
+            "items",       AttributeValue.fromL(itemsAttr),
+            "status",      AttributeValue.fromS(order.getStatus().name()),
+            "totalAmount", AttributeValue.fromN(money(order.getTotalAmount()).toPlainString()),
+            "version",     AttributeValue.fromN(String.valueOf(order.getVersion())),
+            "createdAt",   AttributeValue.fromS(order.getCreatedAt()),
+            "updatedAt",   AttributeValue.fromS(order.getUpdatedAt())
         );
     }
 
@@ -152,6 +183,7 @@ public class OrderRepository {
             .map(av -> Order.OrderItem.builder()
                 .itemId(av.m().get("itemId").s())
                 .quantity(Integer.parseInt(av.m().get("quantity").n()))
+                .unitPrice(readMoney(av.m().get("unitPrice")))
                 .build())
             .collect(Collectors.toList());
 
@@ -160,9 +192,19 @@ public class OrderRepository {
             .customerId(item.get("customerId").s())
             .items(items)
             .status(OrderStatus.valueOf(item.get("status").s()))
+            .totalAmount(readMoney(item.get("totalAmount")))
             .version(Long.parseLong(item.get("version").n()))
             .createdAt(item.get("createdAt").s())
             .updatedAt(item.get("updatedAt").s())
             .build();
+    }
+
+    private static BigDecimal money(BigDecimal value) {
+        return value != null ? value : BigDecimal.ZERO;
+    }
+
+    /** Orders written before pricing existed have no amount attributes. */
+    private static BigDecimal readMoney(AttributeValue attr) {
+        return attr != null ? new BigDecimal(attr.n()) : BigDecimal.ZERO;
     }
 }

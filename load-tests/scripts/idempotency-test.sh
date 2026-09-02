@@ -31,7 +31,7 @@ echo ""
 echo "[1/4] Seeding inventory (qty=$INITIAL_QTY)..."
 curl -sf -X POST "$BASE_URL/api/v1/inventory/seed" \
   -H "Content-Type: application/json" \
-  -d "{\"itemId\":\"$ITEM_ID\",\"itemName\":\"Idem Test\",\"quantity\":$INITIAL_QTY}" > /dev/null
+  -d "{\"itemId\":\"$ITEM_ID\",\"itemName\":\"Idem Test\",\"quantity\":$INITIAL_QTY,\"unitPrice\":19.99}" > /dev/null
 echo "     Done."
 
 # Temp dir for storing order IDs by key index

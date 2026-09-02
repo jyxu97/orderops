@@ -5,11 +5,18 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Map;
+import java.util.Set;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
+import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -124,5 +131,87 @@ class InventoryRepositoryTest extends DynamoDbTestBase {
             "Available quantity must be 0 — no oversell");
         assertEquals(totalStock, final_.getReservedQuantity(),
             "Reserved quantity must equal total stock");
+    }
+
+    @Test
+    void saveAndFindById_roundTripsUnitPrice() {
+        String itemId = "item-price-" + System.nanoTime();
+        repository.save(Inventory.builder()
+            .itemId(itemId).itemName("Widget").unitPrice(new BigDecimal("19.99"))
+            .totalQuantity(10).availableQuantity(10).reservedQuantity(0).version(0L).build());
+
+        Inventory found = repository.findById(itemId).orElseThrow();
+        assertEquals(0, new BigDecimal("19.99").compareTo(found.getUnitPrice()));
+        assertEquals("Widget", found.getItemName());
+    }
+
+    @Test
+    void findById_itemSavedWithoutPrice_defaultsToZero() {
+        String itemId = "item-nopr-" + System.nanoTime();
+        repository.save(Inventory.builder()
+            .itemId(itemId).totalQuantity(1).availableQuantity(1).reservedQuantity(0).version(0L).build());
+
+        assertEquals(0, BigDecimal.ZERO.compareTo(repository.findById(itemId).orElseThrow().getUnitPrice()));
+    }
+
+    @Test
+    void findAllById_returnsRequestedItemsAndOmitsUnknownOnes() {
+        String first  = "item-batch-a-" + System.nanoTime();
+        String second = "item-batch-b-" + System.nanoTime();
+        repository.save(Inventory.builder()
+            .itemId(first).unitPrice(new BigDecimal("5.00"))
+            .totalQuantity(4).availableQuantity(4).reservedQuantity(0).version(0L).build());
+        repository.save(Inventory.builder()
+            .itemId(second).unitPrice(new BigDecimal("7.25"))
+            .totalQuantity(4).availableQuantity(4).reservedQuantity(0).version(0L).build());
+
+        Map<String, Inventory> found = repository.findAllById(Set.of(first, second, "missing-sku"));
+
+        assertEquals(Set.of(first, second), found.keySet());
+        assertEquals(0, new BigDecimal("7.25").compareTo(found.get(second).getUnitPrice()));
+    }
+
+    @Test
+    void findAllById_emptyRequest_returnsEmptyMapWithoutCallingDynamo() {
+        assertTrue(repository.findAllById(Set.of()).isEmpty());
+    }
+
+    @Test
+    void releaseTransactItem_isTheExactInverseOfReserve() {
+        String itemId = "item-rel-" + System.nanoTime();
+        repository.save(Inventory.builder()
+            .itemId(itemId).totalQuantity(10).availableQuantity(10).reservedQuantity(0).version(0L).build());
+
+        assertTrue(repository.reserveInventory(itemId, 4));
+        applyTransaction(repository.buildReleaseTransactItem(itemId, 4));
+
+        Inventory restored = repository.findById(itemId).orElseThrow();
+        assertEquals(10, restored.getAvailableQuantity());
+        assertEquals(0, restored.getReservedQuantity());
+    }
+
+    @Test
+    void releaseTransactItem_cannotDriveReservedQuantityNegative() {
+        String itemId = "item-relneg-" + System.nanoTime();
+        repository.save(Inventory.builder()
+            .itemId(itemId).totalQuantity(10).availableQuantity(10).reservedQuantity(0).version(0L).build());
+
+        assertTrue(repository.reserveInventory(itemId, 2));
+        applyTransaction(repository.buildReleaseTransactItem(itemId, 2));
+
+        // A second release of the same reservation must be rejected, not silently applied —
+        // otherwise availableQuantity would exceed totalQuantity and stock would be conjured.
+        assertThrows(TransactionCanceledException.class,
+            () -> applyTransaction(repository.buildReleaseTransactItem(itemId, 2)));
+
+        Inventory unchanged = repository.findById(itemId).orElseThrow();
+        assertEquals(10, unchanged.getAvailableQuantity());
+        assertEquals(0, unchanged.getReservedQuantity());
+    }
+
+    private void applyTransaction(TransactWriteItem item) {
+        dynamoDb.transactWriteItems(TransactWriteItemsRequest.builder()
+            .transactItems(item)
+            .build());
     }
 }

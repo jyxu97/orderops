@@ -63,6 +63,17 @@ public class OrderController {
         return orderService.getOrder(orderId);
     }
 
+    /**
+     * Cancels an order and releases its reserved stock.
+     *
+     * <p>Returns 200 with the order's state on success and on a repeat call for an order that
+     * is already cancelled; 409 when the order has moved too far through fulfillment to cancel.
+     */
+    @PostMapping("/{orderId}/cancel")
+    public GetOrderResponse cancelOrder(@PathVariable String orderId) {
+        return orderService.cancelOrder(orderId);
+    }
+
     private static OrderStatus parseStatus(String raw) {
         try {
             return OrderStatus.valueOf(raw.trim().toUpperCase());

@@ -8,5 +8,6 @@ public enum OrderStatus {
     SHIPMENT_PROCESSING,
     FULFILLED,
     FAILED,
-    NEEDS_MANUAL_REVIEW
+    NEEDS_MANUAL_REVIEW,
+    CANCELLED
 }

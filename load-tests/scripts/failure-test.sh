@@ -11,7 +11,7 @@ echo "Seeding inventory: itemId=$ITEM_ID quantity=10"
 
 curl -sf -X POST "$BASE_URL/api/v1/inventory/seed" \
   -H 'Content-Type: application/json' \
-  -d "{\"itemId\": \"$ITEM_ID\", \"quantity\": 10}"
+  -d "{\"itemId\": \"$ITEM_ID\", \"quantity\": 10, \"unitPrice\": 19.99}"
 echo
 
 echo "Running k6 failure injection (200 VUs, 10-unit stock)..."

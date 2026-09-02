@@ -96,8 +96,18 @@ public class OrderFulfillmentService {
         }
     }
 
+    /**
+     * States from which the worker must not act.
+     *
+     * <p>CANCELLED belongs here for a correctness reason, not just efficiency: a customer can
+     * cancel while the fulfillment message is still in flight, and the cancellation has already
+     * released the reservation. Fulfilling the order at that point would ship stock the catalog
+     * has taken back.
+     */
     private boolean isTerminal(OrderStatus status) {
-        return status == OrderStatus.FULFILLED || status == OrderStatus.NEEDS_MANUAL_REVIEW;
+        return status == OrderStatus.FULFILLED
+            || status == OrderStatus.NEEDS_MANUAL_REVIEW
+            || status == OrderStatus.CANCELLED;
     }
 
     /**
@@ -124,6 +134,7 @@ public class OrderFulfillmentService {
             .customerId(order.getCustomerId())
             .items(order.getItems())
             .status(newStatus)
+            .totalAmount(order.getTotalAmount())
             .version(order.getVersion() + 1)
             .createdAt(order.getCreatedAt())
             .updatedAt(now)

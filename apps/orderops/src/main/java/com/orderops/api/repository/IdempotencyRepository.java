@@ -8,6 +8,7 @@ import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
+import java.math.BigDecimal;
 import java.util.Map;
 import java.util.Optional;
 
@@ -31,6 +32,7 @@ public class IdempotencyRepository {
                     "requestHash",    AttributeValue.fromS(record.getRequestHash()),
                     "orderId",        AttributeValue.fromS(record.getOrderId()),
                     "orderStatus",    AttributeValue.fromS(record.getOrderStatus()),
+                    "totalAmount",    AttributeValue.fromN(totalAmountOf(record).toPlainString()),
                     "createdAt",      AttributeValue.fromS(record.getCreatedAt())
                 ))
                 .conditionExpression("attribute_not_exists(idempotencyKey)")
@@ -53,7 +55,15 @@ public class IdempotencyRepository {
             .requestHash(item.get("requestHash").s())
             .orderId(item.get("orderId").s())
             .orderStatus(item.get("orderStatus").s())
+            // Records written before pricing existed have no totalAmount attribute.
+            .totalAmount(item.containsKey("totalAmount")
+                ? new BigDecimal(item.get("totalAmount").n())
+                : BigDecimal.ZERO)
             .createdAt(item.get("createdAt").s())
             .build());
+    }
+
+    private static BigDecimal totalAmountOf(IdempotencyRecord record) {
+        return record.getTotalAmount() != null ? record.getTotalAmount() : BigDecimal.ZERO;
     }
 }

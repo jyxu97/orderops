@@ -43,10 +43,25 @@ Built with Java 17, Spring Boot 3, DynamoDB, SQS, and Redis.
 
 ```
 CREATED → INVENTORY_RESERVED → PAYMENT_PROCESSING → PAYMENT_SUCCEEDED → SHIPMENT_PROCESSING → FULFILLED
-                                        │                                        │
-                                        ▼                                        ▼
-                                      FAILED ──────────────────────────▶ NEEDS_MANUAL_REVIEW
+                  │                     │                                        │
+                  │                     ▼                                        ▼
+                  │                   FAILED ──────────────────────────▶ NEEDS_MANUAL_REVIEW
+                  │                                                               │
+                  ▼                                                               ▼
+              CANCELLED ◀─────────────────────────────────────────────────────────┘
 ```
+
+`CANCELLED` is reachable from two places, and only those two:
+
+- **`INVENTORY_RESERVED`** — a customer cancelling before the worker starts charging. Once
+  payment is in flight the order belongs to the fulfillment pipeline and cannot be pulled back.
+- **`NEEDS_MANUAL_REVIEW`** — an operator resolving a failed order, which returns its held
+  stock to the catalog.
+
+Cancelling releases every line item's reservation and flips the order status in a single
+`TransactWriteItems` call, so stock can never be released without the order being cancelled
+(or vice versa). The release carries a `reservedQuantity >= :qty` condition, which is what
+makes a double release abort rather than conjure stock out of nothing.
 
 ---
 
@@ -116,7 +131,7 @@ Idempotency-Key: <uuid>   (optional)
   "items": [{ "itemId": "widget-a", "quantity": 2 }]
 }
 
-201 Created → { "orderId": "...", "status": "INVENTORY_RESERVED", "createdAt": "..." }
+201 Created → { "orderId": "...", "status": "INVENTORY_RESERVED", "totalAmount": 39.98, "createdAt": "..." }
 200 OK      → idempotent replay of a previous request (same key, same body)
 400 Bad Request → validation failure, with a `fieldErrors` map
 409 Conflict → insufficient inventory, or idempotency key reused with a different body
@@ -131,6 +146,9 @@ GET /api/v1/orders/{orderId}
 404 Not Found
 ```
 
+Line items carry the `unitPrice` snapshotted at checkout, so a later catalog price change
+cannot rewrite the value of an existing order.
+
 ### List orders
 
 Exactly one filter is required. Both are served by a GSI, so neither degrades into a scan.
@@ -144,12 +162,24 @@ GET /api/v1/orders?status=NEEDS_MANUAL_REVIEW&limit=25
 400 Bad Request → neither or both filters supplied, unknown status, limit out of 1..100
 ```
 
+### Cancel order
+
+```
+POST /api/v1/orders/{orderId}/cancel
+
+200 OK       → order state after cancellation (also returned when already cancelled)
+404 Not Found
+409 Conflict → the order has moved too far through fulfillment to cancel
+```
+
+Idempotent: a client retrying after a timeout gets 200 and the stock is released exactly once.
+
 ### Inventory
 
 ```
 GET  /api/v1/inventory?limit=50        → catalog listing
 GET  /api/v1/inventory/{itemId}        → 200 OK / 404 Not Found
-POST /api/v1/inventory/seed            → { "itemId": "widget-a", "quantity": 100 }
+POST /api/v1/inventory/seed            → { "itemId": "widget-a", "quantity": 100, "unitPrice": 19.99 }
 ```
 
 ### Metrics

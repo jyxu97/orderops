@@ -42,7 +42,7 @@ sleep 2
 echo "[2/6] Seeding inventory (qty=$POISON_COUNT)..."
 curl -sf -X POST "$BASE_URL/api/v1/inventory/seed" \
   -H "Content-Type: application/json" \
-  -d "{\"itemId\":\"$ITEM_ID\",\"itemName\":\"DLQ Test Item\",\"quantity\":$POISON_COUNT}" \
+  -d "{\"itemId\":\"$ITEM_ID\",\"itemName\":\"DLQ Test Item\",\"quantity\":$POISON_COUNT,\"unitPrice\":19.99}" \
   > /dev/null
 echo "     Done."
 

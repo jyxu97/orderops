@@ -87,4 +87,48 @@ class OrderStateMachineTest {
         assertThrows(InvalidStateTransitionException.class, () ->
             stateMachine.validateTransition(OrderStatus.NEEDS_MANUAL_REVIEW, OrderStatus.CREATED));
     }
+
+    @Test
+    void validTransition_inventoryReservedToCancelled() {
+        assertDoesNotThrow(() ->
+            stateMachine.validateTransition(OrderStatus.INVENTORY_RESERVED, OrderStatus.CANCELLED));
+    }
+
+    @Test
+    void validTransition_needsManualReviewToCancelled() {
+        assertDoesNotThrow(() ->
+            stateMachine.validateTransition(OrderStatus.NEEDS_MANUAL_REVIEW, OrderStatus.CANCELLED));
+    }
+
+    @Test
+    void invalidTransition_paymentProcessingToCancelled() {
+        // Once the worker starts charging, the order belongs to the fulfillment pipeline.
+        assertThrows(InvalidStateTransitionException.class, () ->
+            stateMachine.validateTransition(OrderStatus.PAYMENT_PROCESSING, OrderStatus.CANCELLED));
+    }
+
+    @Test
+    void invalidTransition_fulfilledToCancelled() {
+        assertThrows(InvalidStateTransitionException.class, () ->
+            stateMachine.validateTransition(OrderStatus.FULFILLED, OrderStatus.CANCELLED));
+    }
+
+    @Test
+    void invalidTransition_cancelledIsTerminal() {
+        for (OrderStatus next : OrderStatus.values()) {
+            assertThrows(InvalidStateTransitionException.class,
+                () -> stateMachine.validateTransition(OrderStatus.CANCELLED, next),
+                "CANCELLED must not transition to " + next);
+        }
+    }
+
+    @Test
+    void isCancellable_matchesTheTransitionTable() {
+        assertTrue(stateMachine.isCancellable(OrderStatus.INVENTORY_RESERVED));
+        assertTrue(stateMachine.isCancellable(OrderStatus.NEEDS_MANUAL_REVIEW));
+        assertFalse(stateMachine.isCancellable(OrderStatus.PAYMENT_PROCESSING));
+        assertFalse(stateMachine.isCancellable(OrderStatus.SHIPMENT_PROCESSING));
+        assertFalse(stateMachine.isCancellable(OrderStatus.FULFILLED));
+        assertFalse(stateMachine.isCancellable(OrderStatus.CANCELLED));
+    }
 }

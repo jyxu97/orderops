@@ -9,6 +9,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -23,6 +24,7 @@ public class InventoryService {
         Inventory inventory = Inventory.builder()
             .itemId(request.getItemId())
             .itemName(request.getItemName())
+            .unitPrice(request.getUnitPrice() != null ? request.getUnitPrice() : BigDecimal.ZERO)
             .totalQuantity(request.getQuantity())
             .availableQuantity(request.getQuantity())
             .reservedQuantity(0)
@@ -50,6 +52,7 @@ public class InventoryService {
         return GetInventoryResponse.builder()
             .itemId(inv.getItemId())
             .itemName(inv.getItemName())
+            .unitPrice(inv.getUnitPrice())
             .totalQuantity(inv.getTotalQuantity())
             .availableQuantity(inv.getAvailableQuantity())
             .reservedQuantity(inv.getReservedQuantity())

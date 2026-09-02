@@ -12,6 +12,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
@@ -72,6 +73,7 @@ public class IdempotencyService {
             .requestHash(requestHash)
             .orderId(response.getOrderId())
             .orderStatus(response.getStatus())
+            .totalAmount(response.getTotalAmount())
             .createdAt(response.getCreatedAt())
             .build();
         safeRedisSet(idempotencyKey, toJson(record));
@@ -101,9 +103,11 @@ public class IdempotencyService {
             if (!storedHash.equals(requestHash)) {
                 throw new IdempotencyConflictException(idempotencyKey);
             }
+            JsonNode total = node.get("totalAmount");
             return CreateOrderResponse.builder()
                 .orderId(node.get("orderId").asText())
                 .status(node.get("orderStatus").asText())
+                .totalAmount(total != null && !total.isNull() ? total.decimalValue() : BigDecimal.ZERO)
                 .createdAt(node.get("createdAt").asText())
                 .replayed(true)
                 .build();

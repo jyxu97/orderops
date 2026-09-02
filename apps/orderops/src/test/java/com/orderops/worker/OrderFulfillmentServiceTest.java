@@ -15,6 +15,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -169,6 +170,33 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
     // ------------------------------------------------------------------
 
     /** Seeds an order in INVENTORY_RESERVED state directly into DynamoDB. */
+
+    @Test
+    void fulfill_cancelledOrder_isSkipped() {
+        Order order = seedOrder();
+        // A customer cancelling while the fulfillment message is still in flight has already
+        // released the reservation; fulfilling anyway would ship stock the catalog took back.
+        orderRepository.updateStatus(order.getOrderId(), OrderStatus.CANCELLED, order.getVersion());
+
+        fulfillmentService.fulfill(order.getOrderId());
+
+        Order result = orderRepository.findById(order.getOrderId()).orElseThrow();
+        assertEquals(OrderStatus.CANCELLED, result.getStatus());
+        assertEquals(order.getVersion() + 1, result.getVersion(), "no fulfillment write may have happened");
+        assertEquals(1.0, meterRegistry.counter("fulfillment.skipped").count());
+    }
+
+    @Test
+    void fulfill_preservesOrderTotalAcrossTransitions() {
+        Order order = seedOrder();
+
+        fulfillmentService.fulfill(order.getOrderId());
+
+        Order result = orderRepository.findById(order.getOrderId()).orElseThrow();
+        assertEquals(0, new BigDecimal("9.99").compareTo(result.getTotalAmount()));
+        assertEquals(0, new BigDecimal("9.99").compareTo(result.getItems().get(0).getUnitPrice()));
+    }
+
     private Order seedOrder() {
         String itemId = "test-item-" + UUID.randomUUID();
         inventoryRepository.save(Inventory.builder()
@@ -183,8 +211,10 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
         Order order = Order.builder()
             .orderId(UUID.randomUUID().toString())
             .customerId("test-customer")
-            .items(List.of(Order.OrderItem.builder().itemId(itemId).quantity(1).build()))
+            .items(List.of(Order.OrderItem.builder()
+                .itemId(itemId).quantity(1).unitPrice(new BigDecimal("9.99")).build()))
             .status(OrderStatus.INVENTORY_RESERVED)
+            .totalAmount(new BigDecimal("9.99"))
             .version(1L)
             .createdAt(now)
             .updatedAt(now)

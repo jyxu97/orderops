@@ -31,7 +31,7 @@ echo ""
 echo "[1/5] Seeding inventory (qty=$ORDER_COUNT)..."
 curl -sf -X POST "$API_BASE_URL/api/v1/inventory/seed" \
   -H "Content-Type: application/json" \
-  -d "{\"itemId\":\"$ITEM_ID\",\"itemName\":\"Transient Test Item\",\"quantity\":$ORDER_COUNT}" \
+  -d "{\"itemId\":\"$ITEM_ID\",\"itemName\":\"Transient Test Item\",\"quantity\":$ORDER_COUNT,\"unitPrice\":19.99}" \
   > /dev/null
 echo "     Done."
 
