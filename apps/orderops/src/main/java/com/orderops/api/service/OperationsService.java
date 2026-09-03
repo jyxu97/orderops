@@ -40,6 +40,15 @@ public class OperationsService {
     private static final List<OrderStatus> FAILURE_STATUSES =
         List.of(OrderStatus.FAILED, OrderStatus.NEEDS_MANUAL_REVIEW);
 
+    /**
+     * How far back to look for the transition that actually failed.
+     *
+     * <p>A failed order's newest audit entry is usually the routing step into manual review, so
+     * the useful reason sits one or two entries earlier. Four covers the longest failure path
+     * the state machine allows with room to spare.
+     */
+    private static final int AUDIT_LOOKBACK = 4;
+
     private final OrderRepository orderRepository;
     private final AuditLogRepository auditLogRepository;
     private final OrderStateMachine stateMachine;
@@ -103,19 +112,40 @@ public class OperationsService {
     // -------------------------------------------------------------------------
 
     private FailedOrderResponse toFailedOrder(Order order) {
-        Optional<OrderAuditLog> latest = auditLogRepository.findLatestByOrderId(order.getOrderId());
+        List<OrderAuditLog> recent =
+            auditLogRepository.findRecentByOrderId(order.getOrderId(), AUDIT_LOOKBACK);
+
+        Optional<OrderAuditLog> cause = causeOf(recent);
 
         return FailedOrderResponse.builder()
             .orderId(order.getOrderId())
             .customerId(order.getCustomerId())
             .status(order.getStatus().name())
             .totalAmount(order.getTotalAmount())
-            .lastFailureReason(latest.map(OrderAuditLog::getReason).orElse(null))
-            .failedAt(latest.map(OrderAuditLog::getTimestamp).orElse(order.getUpdatedAt()))
+            .lastFailureReason(cause.map(OrderAuditLog::getReason).orElse(null))
+            .failedAt(cause.map(OrderAuditLog::getTimestamp).orElse(order.getUpdatedAt()))
             .cancellable(stateMachine.isCancellable(order.getStatus()))
             .createdAt(order.getCreatedAt())
             .updatedAt(order.getUpdatedAt())
             .build();
+    }
+
+    /**
+     * Picks the audit entry that explains the failure.
+     *
+     * <p>The newest entry is the wrong one to show: an order in manual review got there via
+     * FAILED → NEEDS_MANUAL_REVIEW, whose reason is the routing step ("Queued for manual
+     * review") rather than the cause. The transition *into* FAILED is what carries the real
+     * reason ("Payment declined", "Shipment failed"), so that is preferred, with the newest
+     * entry as a fallback for an order that failed some other way.
+     *
+     * @param recent audit entries newest first
+     */
+    private static Optional<OrderAuditLog> causeOf(List<OrderAuditLog> recent) {
+        return recent.stream()
+            .filter(entry -> OrderStatus.FAILED.name().equals(entry.getToStatus()))
+            .findFirst()
+            .or(() -> recent.stream().findFirst());
     }
 
 }

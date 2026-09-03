@@ -33,6 +33,10 @@ ops:
   queue-health:
     # Any DLQ message is a warning on its own, so only the main-queue backlog needs a threshold.
     backlog-threshold: ${OPS_BACKLOG_THRESHOLD:100}
+  redrive:
+    # Ceiling SQS respects while draining the DLQ, so a redrive of a large backlog cannot hand
+    # the worker a burst the size of the whole queue.
+    max-messages-per-second: ${OPS_REDRIVE_RATE:10}
 
 simulator:
   payment:

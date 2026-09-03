@@ -61,6 +61,7 @@ public class SqsQueueInspector {
                 .available(true)
                 .queue(queue)
                 .deadLetterQueue(dlq)
+                .backlogThreshold(backlogThreshold)
                 .healthy(warnings.isEmpty())
                 .warnings(warnings)
                 .build();

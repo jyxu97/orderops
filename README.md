@@ -243,7 +243,9 @@ already chronological — nothing is sorted client-side.
 GET /api/v1/ops/overview?recentLimit=20   → status counts + recent orders + queue depth
 GET /api/v1/ops/orders?limit=25           → most recently updated orders, all statuses
 GET /api/v1/ops/failures?limit=25         → failed orders joined with their last failure reason
-GET /api/v1/ops/queue-health              → queue and DLQ depth, with threshold warnings
+GET  /api/v1/ops/queue-health             → queue and DLQ depth, with threshold warnings
+POST /api/v1/ops/dlq/redrive              → move dead-lettered messages back to the queue
+GET  /api/v1/ops/dlq/redrive              → progress of the current or last redrive
 ```
 
 Notes on how these are served:
@@ -256,6 +258,15 @@ Notes on how these are served:
   at 20 index pages; if a count stops at the cap, `countsCapped` is `true` and the totals are
   lower bounds rather than exact figures. At production scale these would be maintained as
   counters off DynamoDB Streams instead of counted on read.
+- **Redrive uses the SQS message move task API**, not a receive-send-delete loop. SQS owns the
+  movement, so there is no window where a message has been sent to the source queue but not yet
+  deleted from the DLQ — a window a manual loop cannot close, and which becomes duplicate
+  deliveries if it crashes mid-redrive. Returns 202 because the move is asynchronous; 409 when
+  one is already running, since SQS permits a single move task per queue.
+- **Failures report the cause, not the routing step.** An order in manual review got there via
+  `FAILED → NEEDS_MANUAL_REVIEW`, and that newest audit entry reads "Queued for manual review"
+  — which tells an operator nothing. The view prefers the reason on the transition *into*
+  `FAILED` ("Payment declined", "Shipment failed"), falling back to the newest entry.
 - **`queue-health` degrades instead of failing.** If SQS is unreachable it returns 200 with
   `available: false` and omits `healthy` entirely — a missing reading is never rendered as a
   healthy one, and a broken metrics read does not hide the order data next to it.
@@ -345,9 +356,11 @@ that happened to land on the replica that produced it.
 ### Frontend
 
 ```
-/order/create      place an order against the live catalog
-/orders            order history by customer, or all orders in one status
-/orders/:orderId   order detail: items, fulfillment progress, audit timeline, cancel
+/order/create           place an order against the live catalog
+/orders                 order history by customer, or all orders in one status
+/orders/:orderId        order detail: items, fulfillment progress, audit timeline, cancel
+/operations             status counts, queue depth, recent orders — live
+/operations/failures    failed orders with their cause, plus the cancel and redrive actions
 ```
 
 Notes on how the UI is wired:
@@ -370,10 +383,73 @@ Notes on how the UI is wired:
   reserving stock twice. The key is discarded on success or when the basket changes.
 - **No optimistic reservation.** The create-order page never shows a reservation as succeeded
   before the server confirms one — inventory is exactly the thing that cannot be guessed.
+- **Dashboard events are coalesced.** `/topic/ops/orders` carries an event for every state
+  change of every order — four or five per order through fulfillment. Refetching per event
+  would turn a checkout burst into a refetch storm against the API the burst is already
+  loading, and each refetch would be stale before it landed. `useCoalescedCallback` collapses a
+  window into one trailing-edge refetch, so a thousand events cost one extra request.
 - **Status names are mapped for display.** The backend keeps granular names because an operator
   needs to know which stage failed; `features/orders/status.ts` is the single table that turns
   them into customer-readable labels, with a test that covers the whole enum so a new backend
   status fails a test rather than rendering blank.
+
+### Redrive vs cancel — two failures, two remedies
+
+These are not interchangeable, and which one applies is decided by *how* the order failed.
+
+```
+transient fault, retries exhausted          permanent failure
+  worker kept throwing                        worker declined the order
+        │                                            │
+        ▼                                            ▼
+  message → DLQ                              FAILED → NEEDS_MANUAL_REVIEW
+  order parked mid-flight                    message deleted on the success path
+  (e.g. PAYMENT_PROCESSING)                  (it never reaches the DLQ)
+        │                                            │
+        ▼                                            ▼
+  REDRIVE — worker resumes                   CANCEL — release the reservation
+  from where it stopped                      back to the catalog
+```
+
+A permanently failing order never reaches the DLQ at all: the worker records the failure,
+routes it to manual review and deletes the message normally. So everything in the DLQ is work
+that was *interrupted*, and `OrderFulfillmentService` being resume-aware is what makes putting
+it back meaningful — it picks up at the current status rather than restarting.
+
+Verified end to end against LocalStack: three orders left stuck in `PAYMENT_PROCESSING` by a
+worker throwing transient faults, their messages dead-lettered after `maxReceiveCount`, then a
+redrive with a healthy worker took all three to `FULFILLED`. A second redrive request while the
+first was in flight returned 409 with its progress. Messages whose order does not exist cycle
+back to the DLQ rather than disappearing, which is the correct outcome — they are not
+recoverable.
+
+Redrives are operator-triggered and rate-limited (`ops.redrive.max-messages-per-second`,
+default 10), never automatic. An automatic redrive would loop a permanently failing message
+between the two queues forever, which is the failure mode a DLQ exists to prevent.
+
+### Dashboard design notes
+
+- **Headline numbers are stat tiles, not a chart.** Four aggregates an operator acts on
+  (in fulfillment, fulfilled, needs attention, cancelled). A grouped bar chart of four numbers
+  is a chart doing a tile's job.
+- **The nine per-status counts are a table.** Past roughly seven classes that all carry
+  meaning, more colour stops helping — so the breakdown is a table, and each row deep-links to
+  that filter on the order list.
+- **Queue depth is a meter, not a chart.** Each row is one value against one limit. The fill
+  carries severity and the track is a lighter step of the same ramp, so state reads across the
+  whole bar rather than only where the fill ends. The DLQ meter is full at one message, because
+  the tolerance is zero rather than some scaled allowance.
+- **Values wear text ink; colour lives on marks.** A tile's number is primary ink with a small
+  coloured dot beside it. Tinting the number would put meaning in colour alone and drag small
+  text onto hues chosen for a 3:1 mark contrast rather than AA body text.
+- **Status colour is never the only signal.** Every badge, warning and meter carries a text
+  label. This matters concretely here: amber and red sit close together under deuteranopia
+  (ΔE 4.4), and no amber that clears AA *text* contrast on white keeps them apart — the
+  darker candidates drop normal-vision separation below the ΔE 15 floor. The label is the
+  mitigation, which is also why `--warning` is used for marks and not for small text.
+- **Proportional figures on tile values, `tabular-nums` only in table columns.** Equal-width
+  digits make a value like `121` read gappy at display size; they earn their place where
+  columns of numbers must align vertically.
 
 ### Health checks
 

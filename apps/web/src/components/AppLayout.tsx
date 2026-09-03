@@ -5,6 +5,8 @@ import { ConnectionIndicator } from './ConnectionIndicator';
 const NAV_LINKS = [
   { to: '/order/create', label: 'New order' },
   { to: '/orders', label: 'Orders' },
+  { to: '/operations', label: 'Operations' },
+  { to: '/operations/failures', label: 'Failures' },
 ];
 
 export function AppLayout() {

@@ -55,11 +55,20 @@ public class AuditLogRepository {
     /**
      * The most recent transition for one order, or empty if it has no audit history.
      *
-     * <p>Reads a single item in descending sort order rather than the whole history: the
-     * operations views only need the latest reason per order, and they ask for many orders.
+     * <p>Reads a single item in descending sort order rather than the whole history.
      */
     public Optional<OrderAuditLog> findLatestByOrderId(String orderId) {
         return query(orderId, false, 1).stream().findFirst();
+    }
+
+    /**
+     * The {@code limit} most recent transitions for one order, newest first.
+     *
+     * <p>Bounded rather than the full history because the operations views ask for many orders
+     * at once and only need the tail of each one.
+     */
+    public List<OrderAuditLog> findRecentByOrderId(String orderId, int limit) {
+        return query(orderId, false, limit);
     }
 
     private List<OrderAuditLog> query(String orderId, boolean ascending, int limit) {

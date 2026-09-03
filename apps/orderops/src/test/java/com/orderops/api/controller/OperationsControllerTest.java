@@ -2,11 +2,14 @@ package com.orderops.api.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.orderops.api.repository.DynamoDbLocalProcess;
+import com.orderops.api.repository.AuditLogRepository;
 import com.orderops.api.repository.OrderRepository;
+import com.orderops.shared.model.OrderAuditLog;
 import com.orderops.api.service.SqsPublisher;
 import com.orderops.shared.state.OrderStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -22,11 +25,19 @@ import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.GetQueueAttributesRequest;
 import software.amazon.awssdk.services.sqs.model.GetQueueAttributesResponse;
 import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
+import software.amazon.awssdk.services.sqs.model.ListMessageMoveTasksRequest;
+import software.amazon.awssdk.services.sqs.model.ListMessageMoveTasksResponse;
+import software.amazon.awssdk.services.sqs.model.ListMessageMoveTasksResultEntry;
 import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
+import software.amazon.awssdk.services.sqs.model.StartMessageMoveTaskRequest;
+import software.amazon.awssdk.services.sqs.model.StartMessageMoveTaskResponse;
 
+import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -66,6 +77,8 @@ class OperationsControllerTest {
     private ObjectMapper objectMapper;
     @Autowired
     private OrderRepository orderRepository;
+    @Autowired
+    private AuditLogRepository auditLogRepository;
 
     private String itemId;
 
@@ -99,7 +112,10 @@ class OperationsControllerTest {
                             String.valueOf(isDlq ? dlqVisible : visible),
                         QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_NOT_VISIBLE,
                             String.valueOf(isDlq ? 0 : inFlight),
-                        QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_DELAYED, "0"))
+                        QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_DELAYED, "0",
+                        // The redrive service resolves ARNs through the same call.
+                        QueueAttributeName.QUEUE_ARN,
+                            "arn:aws:sqs:us-west-2:000000000000:" + (isDlq ? "dlq" : "queue")))
                     .build();
             });
     }
@@ -118,10 +134,25 @@ class OperationsControllerTest {
     /** Walks an order into NEEDS_MANUAL_REVIEW the way a failed fulfillment would. */
     private String createFailedOrder() throws Exception {
         String orderId = createOrder();
-        orderRepository.updateStatus(orderId, OrderStatus.PAYMENT_PROCESSING, 1L);
-        orderRepository.updateStatus(orderId, OrderStatus.FAILED, 2L);
-        orderRepository.updateStatus(orderId, OrderStatus.NEEDS_MANUAL_REVIEW, 3L);
+        advance(orderId, OrderStatus.PAYMENT_PROCESSING, 1L, "Processing payment");
+        advance(orderId, OrderStatus.FAILED, 2L, "Payment declined");
+        advance(orderId, OrderStatus.NEEDS_MANUAL_REVIEW, 3L, "Queued for manual review");
         return orderId;
+    }
+
+    /**
+     * Applies a transition and records it, the way the worker does — the audit entry matters
+     * because the failures view reads its reason back.
+     */
+    private void advance(String orderId, OrderStatus status, long expectedVersion, String reason) {
+        orderRepository.updateStatus(orderId, status, expectedVersion);
+        auditLogRepository.save(OrderAuditLog.builder()
+            .orderId(orderId)
+            .timestamp(Instant.now().toString())
+            .fromStatus("PREVIOUS")
+            .toStatus(status.name())
+            .reason(reason)
+            .build());
     }
 
     @Test
@@ -221,6 +252,34 @@ class OperationsControllerTest {
     }
 
     @Test
+    void failures_reportTheCauseNotTheRoutingStep() throws Exception {
+        // A real failure path: the worker declines payment, moves the order to FAILED with the
+        // cause, then routes it to manual review. The newest audit entry is that routing step,
+        // so showing it would tell an operator nothing about why the order failed.
+        String orderId = createOrder();
+        advance(orderId, OrderStatus.PAYMENT_PROCESSING, 1L, "Processing payment");
+        advance(orderId, OrderStatus.FAILED, 2L, "Payment declined");
+        advance(orderId, OrderStatus.NEEDS_MANUAL_REVIEW, 3L, "Queued for manual review");
+
+        mockMvc.perform(get("/api/v1/ops/failures").param("limit", "50"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$[?(@.orderId=='%s')].lastFailureReason".formatted(orderId))
+                .value(org.hamcrest.Matchers.hasItem("Payment declined")));
+    }
+
+    @Test
+    void failures_orderWithNoFailedTransition_fallsBackToTheLatestEntry() throws Exception {
+        String orderId = createOrder();
+        advance(orderId, OrderStatus.PAYMENT_PROCESSING, 1L, "Processing payment");
+        advance(orderId, OrderStatus.FAILED, 2L, null);
+
+        mockMvc.perform(get("/api/v1/ops/failures").param("limit", "50"))
+            .andExpect(status().isOk())
+            // No reason recorded on the FAILED transition — must not invent one.
+            .andExpect(jsonPath("$[?(@.orderId=='%s')]".formatted(orderId)).exists());
+    }
+
+    @Test
     void failures_markManualReviewOrdersAsCancellable() throws Exception {
         String orderId = createFailedOrder();
 
@@ -249,5 +308,93 @@ class OperationsControllerTest {
         // An unknown order must not look like an order that simply has no history.
         mockMvc.perform(get("/api/v1/orders/does-not-exist/audit"))
             .andExpect(status().isNotFound());
+    }
+
+    /** Stubs the move-task history SQS would report. */
+    private void stubMoveTasks(ListMessageMoveTasksResultEntry... entries) {
+        Mockito.when(sqsClient.listMessageMoveTasks(any(ListMessageMoveTasksRequest.class)))
+            .thenReturn(ListMessageMoveTasksResponse.builder().results(entries).build());
+    }
+
+    private static ListMessageMoveTasksResultEntry moveTask(String status, long moved, long toMove) {
+        return ListMessageMoveTasksResultEntry.builder()
+            .status(status)
+            .approximateNumberOfMessagesMoved(moved)
+            .approximateNumberOfMessagesToMove(toMove)
+            .maxNumberOfMessagesPerSecond(10)
+            .startedTimestamp(System.currentTimeMillis())
+            .build();
+    }
+
+    @Test
+    void redriveStatus_noRedriveEverRun_reportsNone() throws Exception {
+        stubMoveTasks();
+
+        mockMvc.perform(get("/api/v1/ops/dlq/redrive"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("NONE"))
+            .andExpect(jsonPath("$.messagesMoved").doesNotExist());
+    }
+
+    @Test
+    void redriveStatus_reportsProgress() throws Exception {
+        stubMoveTasks(moveTask("RUNNING", 3, 10));
+
+        mockMvc.perform(get("/api/v1/ops/dlq/redrive"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("RUNNING"))
+            .andExpect(jsonPath("$.messagesMoved").value(3))
+            .andExpect(jsonPath("$.messagesToMove").value(10))
+            .andExpect(jsonPath("$.maxMessagesPerSecond").value(10));
+    }
+
+    @Test
+    void startRedrive_returns202AndStartsAMoveTask() throws Exception {
+        stubMoveTasks(moveTask("COMPLETED", 5, 5));
+        Mockito.when(sqsClient.startMessageMoveTask(any(StartMessageMoveTaskRequest.class)))
+            .thenReturn(StartMessageMoveTaskResponse.builder().taskHandle("handle").build());
+
+        // 202, not 200: SQS moves the messages in the background.
+        mockMvc.perform(post("/api/v1/ops/dlq/redrive"))
+            .andExpect(status().isAccepted());
+
+        ArgumentCaptor<StartMessageMoveTaskRequest> captor =
+            ArgumentCaptor.forClass(StartMessageMoveTaskRequest.class);
+        Mockito.verify(sqsClient).startMessageMoveTask(captor.capture());
+
+        StartMessageMoveTaskRequest request = captor.getValue();
+        // Source is the DLQ and destination the fulfillment queue — reversing these would
+        // dead-letter live work.
+        assertTrue(request.sourceArn().endsWith("dlq"), "source must be the DLQ");
+        assertTrue(request.destinationArn().endsWith("queue"), "destination must be the main queue");
+        // Rate limited so a large backlog cannot be handed to the worker all at once.
+        assertEquals(10, request.maxNumberOfMessagesPerSecond());
+    }
+
+    @Test
+    void startRedrive_whileOneIsRunning_returns409AndDoesNotStartAnother() throws Exception {
+        stubMoveTasks(moveTask("RUNNING", 2, 5));
+
+        mockMvc.perform(post("/api/v1/ops/dlq/redrive"))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.status").value(409))
+            .andExpect(jsonPath("$.message")
+                .value(org.hamcrest.Matchers.containsString("2 of 5")));
+
+        // SQS permits one move task per queue; a second start would just fail there.
+        Mockito.verify(sqsClient, Mockito.never())
+            .startMessageMoveTask(any(StartMessageMoveTaskRequest.class));
+    }
+
+    @Test
+    void startRedrive_afterAPreviousOneCompleted_isAllowed() throws Exception {
+        stubMoveTasks(moveTask("COMPLETED", 5, 5));
+        Mockito.when(sqsClient.startMessageMoveTask(any(StartMessageMoveTaskRequest.class)))
+            .thenReturn(StartMessageMoveTaskResponse.builder().taskHandle("handle").build());
+
+        mockMvc.perform(post("/api/v1/ops/dlq/redrive"))
+            .andExpect(status().isAccepted());
+
+        Mockito.verify(sqsClient).startMessageMoveTask(any(StartMessageMoveTaskRequest.class));
     }
 }

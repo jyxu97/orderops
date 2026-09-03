@@ -29,6 +29,12 @@ public class QueueHealthResponse {
     QueueStats deadLetterQueue;
 
     /**
+     * The backlog figure the queue is judged against, echoed back so the dashboard can render
+     * depth as a ratio without keeping its own copy of a server-side threshold.
+     */
+    Integer backlogThreshold;
+
+    /**
      * Whether the backlog is within its configured thresholds. Null when {@code available}
      * is false, so a missing reading is never mistaken for a healthy one.
      */

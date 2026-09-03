@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { listOrdersByCustomer, listOrdersByStatus } from '../../api/orders';
 import { queryKeys } from '../../api/queryKeys';
 import { EmptyState, Loading } from '../../components/Loading';
@@ -17,7 +17,16 @@ type Filter = { kind: 'customer'; customerId: string } | { kind: 'status'; statu
 const DEFAULT_CUSTOMER = 'customer-1';
 
 export function OrderListPage() {
-  const [filter, setFilter] = useState<Filter>({ kind: 'customer', customerId: DEFAULT_CUSTOMER });
+  // `?status=` lets the operations dashboard deep-link into a single status. Read once as the
+  // initial value rather than kept in sync, so the in-page controls stay the source of truth
+  // afterwards and do not fight the URL.
+  const [searchParams] = useSearchParams();
+  const [filter, setFilter] = useState<Filter>(() => {
+    const status = searchParams.get('status');
+    return status && (ORDER_STATUSES as readonly string[]).includes(status)
+      ? { kind: 'status', status: status as OrderStatus }
+      : { kind: 'customer', customerId: DEFAULT_CUSTOMER };
+  });
   const [customerInput, setCustomerInput] = useState(DEFAULT_CUSTOMER);
 
   const query = useQuery({

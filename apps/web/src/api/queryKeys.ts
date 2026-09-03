@@ -17,4 +17,5 @@ export const queryKeys = {
   opsOverview: ['ops', 'overview'] as const,
   opsFailures: ['ops', 'failures'] as const,
   opsQueueHealth: ['ops', 'queueHealth'] as const,
+  opsDlqRedrive: ['ops', 'dlqRedrive'] as const,
 };

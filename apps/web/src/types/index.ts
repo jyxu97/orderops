@@ -104,6 +104,8 @@ export interface QueueHealth {
   unavailableReason?: string;
   queue?: QueueStats;
   deadLetterQueue?: QueueStats;
+  /** The figure the backlog is judged against, so the meter needs no client-side copy. */
+  backlogThreshold?: number;
   /** Absent when `available` is false — a missing reading is never a healthy one. */
   healthy?: boolean;
   warnings?: string[];
@@ -119,6 +121,17 @@ export interface FailedOrder {
   cancellable: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/** State of an SQS message move task moving messages out of the DLQ. */
+export interface DlqRedrive {
+  /** `NONE` when no redrive has ever run, otherwise the SQS task status. */
+  status: 'NONE' | 'RUNNING' | 'COMPLETED' | 'CANCELLING' | 'CANCELLED' | 'FAILED';
+  messagesToMove?: number;
+  messagesMoved?: number;
+  maxMessagesPerSecond?: number;
+  startedAt?: string;
+  failureReason?: string;
 }
 
 export interface OpsOverview {

@@ -182,6 +182,15 @@ h1 {
   align-items: start;
 }
 
+/*
+ * For a row whose panels differ a lot in height — a two-meter queue widget beside a nine-row
+ * status table — stretching keeps both surfaces the same height instead of leaving the shorter
+ * one floating above a gap the width of half the page.
+ */
+.layout-split--stretch {
+  align-items: stretch;
+}
+
 /* ── Panels ─────────────────────────────────────────────────────────────── */
 
 .panel {
@@ -307,6 +316,12 @@ h1 {
 .button--danger {
   border-color: var(--danger);
   color: var(--danger);
+}
+
+.button--compact {
+  padding: 5px 10px;
+  font-size: 0.85rem;
+  white-space: nowrap;
 }
 
 .button--ghost {
@@ -636,6 +651,186 @@ h1 {
 .empty-state {
   margin: 0;
   padding: 20px 0;
+  color: var(--text-muted);
+}
+
+/* ── Stat tiles ─────────────────────────────────────────────────────────── */
+
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.stat {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stat__label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+/*
+ * Primary ink, not the tone colour: meaning lives in the mark beside it, and a number tinted
+ * with a mark-grade colour would be small text on a hue chosen for 3:1, not for body contrast.
+ *
+ * No tabular-nums here on purpose — equal-width digits make a value like 121 read gappy at
+ * display size. Tabular figures are for table columns that must align vertically.
+ */
+.stat__value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1.75rem;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.15;
+}
+
+.stat__value--unknown {
+  font-size: 1.15rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.stat__mark {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.stat__mark--active  { background: var(--accent); }
+.stat__mark--success { background: var(--success); }
+.stat__mark--danger  { background: var(--danger); }
+
+.stat__hint {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* ── Meters ─────────────────────────────────────────────────────────────── */
+
+.meter {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.meter__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.meter__label {
+  font-size: 0.88rem;
+}
+
+.meter__value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.meter__limit {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/*
+ * The track is a lighter step of the fill's own ramp rather than neutral grey, so severity
+ * reads across the full width instead of only where the fill stops.
+ */
+.meter__track {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.meter__track--ok      { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.meter__track--warning { background: color-mix(in srgb, var(--warning) 20%, transparent); }
+.meter__track--danger  { background: color-mix(in srgb, var(--danger) 20%, transparent); }
+
+.meter__fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 240ms ease;
+}
+
+.meter__fill--ok      { background: var(--accent); }
+.meter__fill--warning { background: var(--warning); }
+.meter__fill--danger  { background: var(--danger); }
+
+.meter__detail {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* ── Key/value list ─────────────────────────────────────────────────────── */
+
+.kv {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.kv__row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 12px;
+  font-size: 0.88rem;
+}
+
+.kv__row dt {
+  color: var(--text-muted);
+}
+
+.kv__row dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Warning list ───────────────────────────────────────────────────────── */
+
+.warnings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+/* Text stays in ink; the mark carries severity. */
+.warnings__item {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  font-size: 0.88rem;
+}
+
+.warnings__mark {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning);
+  flex: none;
+  transform: translateY(-1px);
+}
+
+.table__zero {
   color: var(--text-muted);
 }
 

@@ -34,6 +34,13 @@ public class GlobalExceptionHandler {
         return conflict(ex.getMessage());
     }
 
+    @ExceptionHandler(RedriveConflictException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    public ErrorResponse handleRedriveConflict(RedriveConflictException ex) {
+        log.warn("Redrive conflict: {}", ex.getMessage());
+        return conflict(ex.getMessage());
+    }
+
     @ExceptionHandler(OrderNotFoundException.class)
     @ResponseStatus(HttpStatus.NOT_FOUND)
     public ErrorResponse handleOrderNotFound(OrderNotFoundException ex) {
