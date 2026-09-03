@@ -1,12 +1,12 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { RealtimeConnection, type ConnectionStatus } from './connection';
+import { RealtimeConnection, type ConnectionStatus, type RealtimeConnectionLike } from './connection';
 import { RealtimeContext } from './context';
 
 interface Props {
   children: ReactNode;
   /** Injected by tests to avoid opening a real socket. */
-  connection?: RealtimeConnection | undefined;
+  connection?: RealtimeConnectionLike | undefined;
 }
 
 /**

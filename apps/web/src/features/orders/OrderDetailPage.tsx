@@ -53,9 +53,12 @@ export function OrderDetailPage() {
   const cancel = useMutation({
     mutationFn: () => cancelOrder(orderId as string),
     onSuccess: (updated) => {
+      // The cancel response is the authoritative post-cancel order, so seed the cache with it
+      // rather than paying for a refetch. Only the list keys are invalidated — invalidating
+      // all of `orders` would immediately discard what was just written here.
       queryClient.setQueryData(queryKeys.order(updated.orderId), updated);
       void queryClient.invalidateQueries({ queryKey: queryKeys.orderAudit(updated.orderId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.orders });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.orderLists });
       void queryClient.invalidateQueries({ queryKey: queryKeys.inventory });
     },
   });

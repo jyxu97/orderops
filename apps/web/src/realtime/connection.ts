@@ -20,6 +20,22 @@ function defaultWebSocketUrl(): string {
 }
 
 /**
+ * What {@link RealtimeProvider} and the hooks depend on.
+ *
+ * Declared as an interface so tests can supply a driveable stand-in rather than relying on the
+ * real class's constructor happening to be inert under jsdom — and so the surface the UI
+ * actually uses is written down in one place.
+ */
+export interface RealtimeConnectionLike {
+  activate(): void;
+  deactivate(): Promise<void>;
+  subscribe(destination: string, handler: EventHandler): () => void;
+  onStatusChange(listener: StatusListener): () => void;
+  onReconnect(listener: ReconnectListener): () => void;
+  getStatus(): ConnectionStatus;
+}
+
+/**
  * One STOMP connection per browser tab, shared by every component that needs live updates.
  *
  * A connection per component would mean a socket per mounted list row; the server holds each
@@ -35,7 +51,7 @@ function defaultWebSocketUrl(): string {
  *   reconnects are announced and the caller refetches from REST. Events are delivery hints;
  *   DynamoDB is the source of truth.
  */
-export class RealtimeConnection {
+export class RealtimeConnection implements RealtimeConnectionLike {
   private readonly client: Client;
   private readonly handlers = new Map<string, Set<EventHandler>>();
   private readonly statusListeners = new Set<StatusListener>();

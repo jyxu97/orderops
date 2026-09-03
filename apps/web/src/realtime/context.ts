@@ -1,8 +1,8 @@
 import { createContext } from 'react';
-import type { RealtimeConnection, ConnectionStatus } from './connection';
+import type { RealtimeConnectionLike, ConnectionStatus } from './connection';
 
 export interface RealtimeContextValue {
-  connection: RealtimeConnection;
+  connection: RealtimeConnectionLike;
   status: ConnectionStatus;
 }
 

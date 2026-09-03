@@ -72,7 +72,7 @@ export interface CreateOrderResponse {
 export interface Page<T> {
   items: T[];
   /** Absent when there are no further results. */
-  nextCursor?: string;
+  nextCursor?: string | undefined;
 }
 
 export interface InventoryItem {
@@ -89,7 +89,7 @@ export interface OrderAuditEntry {
   timestamp: string;
   fromStatus: string;
   toStatus: string;
-  reason?: string;
+  reason?: string | undefined;
 }
 
 export interface QueueStats {
@@ -101,14 +101,14 @@ export interface QueueStats {
 
 export interface QueueHealth {
   available: boolean;
-  unavailableReason?: string;
-  queue?: QueueStats;
-  deadLetterQueue?: QueueStats;
+  unavailableReason?: string | undefined;
+  queue?: QueueStats | undefined;
+  deadLetterQueue?: QueueStats | undefined;
   /** The figure the backlog is judged against, so the meter needs no client-side copy. */
-  backlogThreshold?: number;
+  backlogThreshold?: number | undefined;
   /** Absent when `available` is false — a missing reading is never a healthy one. */
-  healthy?: boolean;
-  warnings?: string[];
+  healthy?: boolean | undefined;
+  warnings?: string[] | undefined;
 }
 
 export interface FailedOrder {
@@ -116,7 +116,7 @@ export interface FailedOrder {
   customerId: string;
   status: OrderStatus;
   totalAmount: number;
-  lastFailureReason?: string;
+  lastFailureReason?: string | undefined;
   failedAt: string;
   cancellable: boolean;
   createdAt: string;
@@ -127,11 +127,11 @@ export interface FailedOrder {
 export interface DlqRedrive {
   /** `NONE` when no redrive has ever run, otherwise the SQS task status. */
   status: 'NONE' | 'RUNNING' | 'COMPLETED' | 'CANCELLING' | 'CANCELLED' | 'FAILED';
-  messagesToMove?: number;
-  messagesMoved?: number;
-  maxMessagesPerSecond?: number;
-  startedAt?: string;
-  failureReason?: string;
+  messagesToMove?: number | undefined;
+  messagesMoved?: number | undefined;
+  maxMessagesPerSecond?: number | undefined;
+  startedAt?: string | undefined;
+  failureReason?: string | undefined;
 }
 
 export interface OpsOverview {
@@ -149,17 +149,17 @@ export interface ApiErrorBody {
   error: string;
   message: string;
   /** Field name → validation message. Present only on 400 validation failures. */
-  fieldErrors?: Record<string, string>;
+  fieldErrors?: Record<string, string> | undefined;
 }
 
 /** Payload broadcast on the STOMP topics. */
 export interface OrderStatusEvent {
   type: 'ORDER_STATUS_CHANGED';
   orderId: string;
-  customerId?: string;
-  previousStatus?: OrderStatus;
+  customerId?: string | undefined;
+  previousStatus?: OrderStatus | undefined;
   status: OrderStatus;
-  reason?: string;
+  reason?: string | undefined;
   occurredAt: string;
   /** Commit time in epoch ms, used by the latency benchmark. */
   committedAtEpochMilli: number;

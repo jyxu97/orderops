@@ -49,7 +49,7 @@ export function FailuresPage() {
     onSettled: () => {
       setCancellingOrderId(null);
       void queryClient.invalidateQueries({ queryKey: queryKeys.ops });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.orders });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.orderLists });
       void queryClient.invalidateQueries({ queryKey: queryKeys.inventory });
     },
   });

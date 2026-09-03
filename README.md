@@ -144,10 +144,31 @@ starts infrastructure only. If port 6379 is already taken on your host, set
 
 ```bash
 make test          # backend: JUnit + DynamoDB Local
-make web-test      # frontend: Vitest
+make web-test      # frontend: Vitest + React Testing Library
 make web-lint
 make web-typecheck
 ```
+
+The frontend suite runs against real components with the API modules mocked, so it asserts
+behaviour rather than implementation:
+
+- **`connection.test.ts`** stands in a fake stompjs client to cover the parts a socket cannot
+  be driven into under jsdom — that subscriptions are re-sent after a reconnect, that the
+  resync notification fires on a *re*connect and not the first connect, that handlers on one
+  destination share a single STOMP subscription, and that one throwing handler does not stop
+  the others.
+- **`CreateOrderPage.test.tsx`** pins the idempotency-key rule: a retried submit reuses the
+  same key, and editing the basket mints a new one. It also asserts the page never reports a
+  reservation before the server confirms it.
+- **`OrderDetailPage.test.tsx`** drives a live event through the fake connection and asserts
+  the page *refetches* rather than patching its cache from the event, and that cancel is
+  offered strictly from the server's `cancellable` flag.
+- **`OperationsPage.test.tsx`** covers the aggregate tiles, the lower-bound warning when a
+  count hit its cap, that unreadable queue depth renders as unknown rather than healthy, and
+  that a 50-event burst collapses into one refetch.
+- **`FailuresPage.test.tsx`** covers both operator workflows and their distinct states —
+  including that the page does not claim "nothing needs an operator" while the DLQ still holds
+  messages.
 
 ### A note on frontend toolchain versions
 

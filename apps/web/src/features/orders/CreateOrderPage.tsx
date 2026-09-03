@@ -54,7 +54,7 @@ export function CreateOrderPage() {
     },
     onSuccess: (response: CreateOrderResponse) => {
       idempotencyKey.current = null;
-      void queryClient.invalidateQueries({ queryKey: queryKeys.orders });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.orderLists });
       void queryClient.invalidateQueries({ queryKey: queryKeys.inventory });
       navigate(`/orders/${response.orderId}`, {
         state: { replayed: response.replayed },
