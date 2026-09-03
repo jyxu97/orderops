@@ -1,4 +1,8 @@
-version: "3.9"
+# Infrastructure starts by default. The application services sit behind the `app` profile, so
+# `docker compose up -d` brings up only DynamoDB Local, LocalStack and Redis — the workflow the
+# Makefile's local-up target expects, where the API and worker run from the IDE or a jar.
+#
+# Use `make app-up` (docker compose --profile app up -d) to run the whole stack in containers.
 
 services:
   dynamodb-local:
@@ -19,6 +23,71 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: redis
+    container_name: orderops-redis
     ports:
-      - "6379:6379"
+      # Override with ORDEROPS_REDIS_PORT if 6379 is already taken on the host.
+      - "${ORDEROPS_REDIS_PORT:-6379}:6379"
+
+  # ── Application (profile: app) ──────────────────────────────────────────────
+
+  orderops-api:
+    profiles: ["app"]
+    build:
+      context: ./apps/orderops
+    container_name: orderops-api
+    ports:
+      - "8080:8080"
+    environment:
+      APP_MODE: api
+      AWS_REGION: us-west-2
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      SQS_ENDPOINT: http://localstack:4566
+      FULFILLMENT_QUEUE_URL: http://localstack:4566/000000000000/order-fulfillment-queue
+      FULFILLMENT_DLQ_URL: http://localstack:4566/000000000000/order-fulfillment-dlq
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # The browser reaches the API through the web container's nginx, so requests are
+      # same-origin and this list only matters for a direct-to-8080 dev server.
+      CORS_ALLOWED_ORIGINS: http://localhost:5173,http://localhost:4173,http://localhost:3000
+    depends_on:
+      - dynamodb-local
+      - localstack
+      - redis
+
+  orderops-worker:
+    profiles: ["app"]
+    build:
+      context: ./apps/orderops
+    container_name: orderops-worker
+    environment:
+      APP_MODE: worker
+      AWS_REGION: us-west-2
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      SQS_ENDPOINT: http://localstack:4566
+      FULFILLMENT_QUEUE_URL: http://localstack:4566/000000000000/order-fulfillment-queue
+      FULFILLMENT_DLQ_URL: http://localstack:4566/000000000000/order-fulfillment-dlq
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # The worker serves no HTTP traffic; a distinct port avoids clashing with the API when
+      # both run on the same host network in other setups.
+      SERVER_PORT: 8081
+    depends_on:
+      - dynamodb-local
+      - localstack
+      - redis
+
+  orderops-web:
+    profiles: ["app"]
+    build:
+      context: ./apps/web
+    container_name: orderops-web
+    ports:
+      - "3000:80"
+    environment:
+      ORDEROPS_API_HOST: orderops-api:8080
+    depends_on:
+      - orderops-api

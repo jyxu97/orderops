@@ -1,0 +1,8 @@
+node_modules
+dist
+dist-types
+coverage
+*.local
+.env
+.env.*
+!.env.example

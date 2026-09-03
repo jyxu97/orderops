@@ -3,7 +3,7 @@
 A distributed order fulfillment backend demonstrating reliability and consistency patterns:
 concurrent inventory reservation, idempotency, async worker, retry/DLQ, and observability.
 
-Built with Java 17, Spring Boot 3, DynamoDB, SQS, and Redis.
+Built with Java 21, Spring Boot 3, React, TypeScript, DynamoDB, SQS, Redis and WebSockets.
 
 ---
 
@@ -69,12 +69,14 @@ makes a double release abort rather than conjure stock out of nothing.
 
 | Layer        | Technology                          |
 |--------------|-------------------------------------|
-| API          | Java 17, Spring Boot 3, Lombok      |
+| Frontend     | React 19, TypeScript, Vite, TanStack Query, React Router |
+| Real-time    | STOMP over WebSocket + Redis Pub/Sub |
+| API          | Java 21, Spring Boot 3, Lombok      |
 | Database     | AWS DynamoDB (conditional writes)   |
 | Queue        | AWS SQS + DLQ                       |
 | Cache        | Redis (idempotency fast path)       |
 | Metrics      | Spring Boot Actuator + Micrometer   |
-| Tests        | JUnit 5, Mockito, DynamoDB Local    |
+| Tests        | JUnit 5, Mockito, DynamoDB Local, Vitest |
 | Load Tests   | k6                                  |
 | CI/CD        | GitHub Actions → ECR → ECS/Fargate  |
 
@@ -85,6 +87,7 @@ makes a double release abort rather than conjure stock out of nothing.
 ### Prerequisites
 
 - Java 21 (Amazon Corretto recommended)
+- Node.js 20.11+ (see the note below on toolchain versions)
 - Docker
 - [k6](https://k6.io/docs/getting-started/installation/) (for load tests)
 
@@ -108,11 +111,50 @@ APP_MODE=api java -jar apps/orderops/target/orderops-*.jar
 APP_MODE=worker java -jar apps/orderops/target/orderops-*.jar
 ```
 
+### Run the frontend
+
+```bash
+make web-install   # once
+make web-dev       # Vite dev server on http://localhost:5173
+```
+
+The dev server proxies `/api` and `/ws` to the API on `:8080`, so the browser talks to a single
+origin and the app's URLs stay relative. That is also how it runs in AWS, where one CloudFront
+distribution fronts both the S3 bucket and the ALB.
+
+Seed a catalog first, or the create-order page has nothing to add:
+
+```bash
+bash load-tests/scripts/seed.sh http://localhost:8080 widget-a 120 19.99
+```
+
+### Or run the whole stack in containers
+
+```bash
+make app-up        # API, worker, React app (nginx) + infrastructure
+                   # → http://localhost:3000
+make app-down
+```
+
+The application services sit behind a compose `app` profile, so plain `make local-up` still
+starts infrastructure only. If port 6379 is already taken on your host, set
+`ORDEROPS_REDIS_PORT` to something else.
+
 ### Run tests
 
 ```bash
-make test
+make test          # backend: JUnit + DynamoDB Local
+make web-test      # frontend: Vitest
+make web-lint
+make web-typecheck
 ```
+
+### A note on frontend toolchain versions
+
+Vite 7/8 require Node `^20.19.0 || >=22.12.0`, and jsdom 27+ needs `require(esm)` support that
+arrived in the same Node releases. This repo is pinned to **Vite 6**, **Vitest 3** and
+**jsdom 26**, which work on Node 20.11. Nothing about the project needs the newer majors — but
+if you upgrade to Node 22 LTS, bumping those three pins is the only change required.
 
 ---
 
@@ -284,6 +326,39 @@ that happened to land on the replica that produced it.
   principal on the STOMP session, and authentication is out of scope for this project.
 - **A malformed payload does not kill the listener** — it is counted and discarded so the next
   event still lands.
+
+### Frontend
+
+```
+/order/create      place an order against the live catalog
+/orders            order history by customer, or all orders in one status
+/orders/:orderId   order detail: items, fulfillment progress, audit timeline, cancel
+```
+
+Notes on how the UI is wired:
+
+- **Server state lives in TanStack Query**, UI state in components. Every query key is declared
+  in `src/api/queryKeys.ts` so an invalidation cannot drift from the key a query registered under.
+- **One WebSocket per tab**, shared by every component. A connection per component would mean a
+  socket per mounted list row, and connection count is what decides whether the API needs
+  scaling out. `RealtimeConnection` multiplexes destinations over the single socket and
+  re-subscribes them after a reconnect — stompjs restores the socket but not the subscriptions.
+- **Events trigger a refetch, not a cache patch.** An event carries only the new status;
+  DynamoDB is the authority on what the order now looks like, version and timestamps included.
+  On the status-filtered list a patch could not even express the right outcome, since a status
+  change can move an order *out of* the result set.
+- **Reconnect invalidates every query.** A client that was disconnected cannot know what it
+  missed, so anything cached could be stale. Reconnects are rare, so broad invalidation costs
+  almost nothing while a missed one would leave the UI quietly showing an old status.
+- **One idempotency key per intended order, not per HTTP attempt.** If checkout times out, the
+  retry carries the same key so the backend recognises it as the same order rather than
+  reserving stock twice. The key is discarded on success or when the basket changes.
+- **No optimistic reservation.** The create-order page never shows a reservation as succeeded
+  before the server confirms one — inventory is exactly the thing that cannot be guessed.
+- **Status names are mapped for display.** The backend keeps granular names because an operator
+  needs to know which stage failed; `features/orders/status.ts` is the single table that turns
+  them into customer-readable labels, with a test that covers the whole enum so a new backend
+  status fails a test rather than rendering blank.
 
 ### Metrics
 

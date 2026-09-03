@@ -1,0 +1,56 @@
+# Serves the built SPA and reverses the API and WebSocket onto the backend, so the browser
+# talks to a single origin. This mirrors the AWS setup where one CloudFront distribution
+# fronts both the S3 bucket and the ALB — which is why the app's URLs are relative and CORS
+# is not on the critical path.
+#
+# ORDEROPS_API_HOST is expanded by the nginx image's entrypoint (envsubst over
+# /etc/nginx/templates/*.template) and defaults to the compose service name.
+
+upstream orderops_api {
+    server ${ORDEROPS_API_HOST};
+}
+
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Hashed asset filenames are immutable, so they can be cached hard.
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    location /api/ {
+        proxy_pass http://orderops_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /actuator/ {
+        proxy_pass http://orderops_api;
+        proxy_set_header Host $host;
+    }
+
+    location /ws {
+        proxy_pass http://orderops_api;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        # A STOMP connection is idle between order events; the default 60s read timeout would
+        # cut it even though heartbeats keep it alive at the application level.
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # Client-side routing: any unknown path is a React route, not a missing file.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
