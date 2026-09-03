@@ -57,3 +57,17 @@ management:
   endpoint:
     health:
       show-details: always
+      group:
+        # Probed by the ECS container health check and the ALB target group.
+        #
+        # Deliberately excludes redis. Redis is a degradable dependency here: the idempotency
+        # fast path falls back to DynamoDB and real-time fan-out reconnects on its own, so a
+        # Redis outage costs live updates, not the ability to take orders. If the probe failed
+        # on it, ECS would kill and replace every API task while Redis was down and turn a
+        # partial degradation into a total outage.
+        #
+        # The trade-off is a weaker probe: it reports process liveness, not end-to-end
+        # readiness. That is the right side to err on for a restart-triggering check — the full
+        # /actuator/health still reports redis DOWN for dashboards and alarms.
+        serving:
+          include: ping, diskSpace

@@ -326,6 +326,21 @@ that happened to land on the replica that produced it.
   principal on the STOMP session, and authentication is out of scope for this project.
 - **A malformed payload does not kill the listener** — it is counted and discarded so the next
   event still lands.
+- **Redis is not a startup dependency.** The listener container is excluded from
+  lifecycle-driven startup and brought up afterwards by `RedisEventBridgeStarter`, which polls
+  `isListening()` and retries. Subscribing during context refresh would fail the bean and stop
+  the API booting at all when Redis is down — inverting the whole consistency model, where
+  losing Redis should cost live updates and nothing else.
+
+  Two details that are easy to get wrong here:
+
+  - `start()` is not a usable success signal. Once the container's internal running flag is
+    set, a second call short-circuits and returns normally even though nothing was ever
+    subscribed, so "it did not throw" reads as success while Redis is still refusing
+    connections. `isListening()` is the only honest check.
+  - A failed `start()` is sticky for the same reason, so each retry calls `stop()` first.
+    Without that the bridge stays dead permanently once the first attempt fails, even after
+    Redis comes back.
 
 ### Frontend
 
@@ -359,6 +374,20 @@ Notes on how the UI is wired:
   needs to know which stage failed; `features/orders/status.ts` is the single table that turns
   them into customer-readable labels, with a test that covers the whole enum so a new backend
   status fails a test rather than rendering blank.
+
+### Health checks
+
+```
+GET /actuator/health           full view, including redis
+GET /actuator/health/serving   what the ECS container health check probes
+```
+
+`serving` deliberately excludes Redis. Redis is degradable — the idempotency fast path falls
+back to DynamoDB and the event bridge reconnects on its own — so if the restart-triggering
+probe failed on it, ECS would kill and replace every API task while Redis was down and turn a
+partial degradation into a total outage. The trade-off is a weaker probe that reports process
+liveness rather than end-to-end readiness, which is the right side to err on for a check that
+can restart tasks. The full `/actuator/health` still reports `redis: DOWN` for dashboards.
 
 ### Metrics
 
