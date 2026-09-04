@@ -22,7 +22,9 @@
         { "name": "DYNAMODB_ENDPOINT",    "value": "" },
         { "name": "SQS_ENDPOINT",         "value": "" },
         { "name": "PAYMENT_FAILURE_MODE", "value": "NONE" },
-        { "name": "SHIPMENT_FAILURE_MODE","value": "NONE" }
+        { "name": "SHIPMENT_FAILURE_MODE","value": "NONE" },
+        { "name": "CLOUDWATCH_METRICS_ENABLED", "value": "true" },
+        { "name": "CLOUDWATCH_NAMESPACE",       "value": "OrderOps" }
       ],
       "secrets": [
         { "name": "REDIS_HOST",            "valueFrom": "/orderops/redis-host" },

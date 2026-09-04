@@ -65,6 +65,15 @@
       <artifactId>spring-boot-starter-actuator</artifactId>
     </dependency>
 
+    <!-- Ships the app's own Micrometer meters to CloudWatch. Without a registry the custom
+         counters and gauges never leave the JVM, so "alarm on fulfillment failures" and
+         "alarm on WebSocket connections" would have nothing to alarm on. Inert unless
+         management.cloudwatch.metrics.export.enabled is true. -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-cloudwatch2</artifactId>
+    </dependency>
+
     <!-- AWS SDK v2 -->
     <dependency>
       <groupId>software.amazon.awssdk</groupId>

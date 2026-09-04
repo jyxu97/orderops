@@ -11,6 +11,7 @@ target/
 
 # Design document (local reference only)
 docs/
+CLAUDE.md
 
 # Test artifacts
 dynamodb-local-metadata.json

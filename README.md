@@ -600,40 +600,151 @@ stack carrying state from a throughput run makes the counts unattributable.
 
 ## AWS Deployment
 
+```
+                        ┌─────────────────────────┐
+   browser ────────────▶│      CloudFront         │
+                        │  (single origin)        │
+                        └────┬───────────────┬────┘
+                    /*       │               │  /api/*  ·  /ws
+                             ▼               ▼
+                    ┌────────────────┐  ┌──────────────┐
+                    │  S3 (SPA)      │  │     ALB      │
+                    └────────────────┘  └──────┬───────┘
+                                               ▼
+                                     ┌──────────────────┐
+                                     │ orderops-api     │  ECS/Fargate
+                                     └──────────────────┘
+                                     ┌──────────────────┐
+                                     │ orderops-worker  │  ECS/Fargate
+                                     └──────────────────┘
+                                        │      │      │
+                                   DynamoDB   SQS  ElastiCache
+```
+
+The React app is static files on S3, not a container. Running a Fargate task to serve them
+would pay for an always-on container, an ALB target and a health check to do a job object
+storage does better. The image in `apps/web/Dockerfile` still exists — it is what
+`make app-up` uses to run the whole stack locally — it just is not what production serves.
+
+CloudFront carries **two origins**, so `/api/*` and `/ws` reach the ALB through the same
+distribution the app is served from. That is what keeps the browser on one origin, which is why
+the app's fetch and WebSocket URLs are relative and CORS is off the critical path. The API's
+CORS config remains for the split-origin case: the Vite dev server, or an API on its own host.
+
 ### One-time setup
 
 ```bash
-# configure AWS CLI, then:
+# 1. ECR, ECS cluster, log group, DynamoDB tables, SQS queues, IAM task role
 bash infra/ecs/setup.sh
 
-# store ElastiCache endpoint
-aws ssm put-parameter \
-  --name /orderops/redis-host \
-  --value <elasticache-endpoint> \
-  --type SecureString
+# 2. ElastiCache endpoint (the app reads it from SSM, never from an env var in the task def)
+aws ssm put-parameter --name /orderops/redis-host \
+  --value <elasticache-endpoint> --type SecureString
+
+# 3. Create the ECS services and the ALB, then:
+ALB_DNS=<alb-dns-name> bash infra/frontend/setup.sh    # S3 bucket + CloudFront distribution
+
+# 4. Alarms (ALB ids are optional; without them the ALB alarms are skipped)
+ALB_ID=app/orderops-alb/xxx TARGET_GROUP_ID=targetgroup/orderops-api/xxx \
+  bash infra/ecs/cloudwatch-alarms.sh
+
+# 5. Verify against the ALB directly, not CloudFront
+BASE_URL=http://<alb-dns-name> bash infra/smoke-test.sh
 ```
+
+The task role is scoped to the four DynamoDB tables, the two queues and the app's own metrics
+namespace, rather than the managed `AmazonDynamoDBFullAccess` / `AmazonSQSFullAccess` policies —
+a leaked task credential should not be able to read or drop anything else in the account.
 
 ### CI/CD
 
-Every push to `main`:
-1. Tests run (`mvn test`)
-2. Docker image built and pushed to ECR
-3. ECS API and worker services updated (rolling deploy, waits for stability)
+Every push and pull request runs four jobs:
 
-Required GitHub secrets:
-- `AWS_ROLE_ARN` — IAM role ARN with ECR push + ECS deploy permissions (OIDC)
+| Job | What it does |
+|---|---|
+| `backend` | `mvn test` — unit plus DynamoDB Local integration tests |
+| `frontend` | `npm ci`, lint, typecheck, test, build |
+| `docker` | builds both images without pushing, so a broken Dockerfile fails the PR |
+| `deploy` | manual only — see below |
 
-### CloudWatch alarms
+Deployment is **`workflow_dispatch`, not automatic on `main`**. This repository deploys to a
+personal AWS account where an accidental deploy costs real money and can break the environment
+while nobody is watching. The gate is deliberate rather than missing: every check above runs on
+each push, so `main` is always known-good and deployable on demand.
+
+The deploy job, once triggered:
+
+1. Builds and pushes **one** image to ECR — the API and worker are the same jar behind
+   `APP_MODE`, so building twice would only create a chance for them to diverge
+2. Rolling-deploys both ECS services with `wait-for-service-stability`, so a task that starts
+   and immediately fails its health check fails the step instead of being reported as success
+3. Builds the SPA and syncs it to S3 — **hashed assets first** with a one-year `max-age`, then
+   `index.html` with `no-cache`. In that order a client fetching the new `index.html` always
+   finds the assets it names; the reverse order leaves a window serving an index pointing at
+   objects that do not exist yet
+4. Invalidates the CloudFront cache for `/` and `/index.html`
+5. Runs `infra/smoke-test.sh` against the ALB
+
+Required GitHub configuration:
+
+| Kind | Name | Value |
+|---|---|---|
+| Secret | `AWS_ROLE_ARN` | IAM role for OIDC, with ECR push, ECS deploy, S3 and CloudFront permissions |
+| Variable | `FRONTEND_BUCKET` | S3 bucket name, printed by `infra/frontend/setup.sh` |
+| Variable | `CLOUDFRONT_DISTRIBUTION` | Distribution ID, printed by the same script |
+| Variable | `ALB_BASE_URL` | e.g. `http://orderops-alb-xxx.us-west-2.elb.amazonaws.com` |
+
+### Smoke test
+
+`infra/smoke-test.sh` creates one real order, which is the only way to know the DynamoDB
+transaction, the SQS publish and the worker are all pointed at the same resources. It checks:
+
+1. `/actuator/health/serving` responds
+2. Inventory seeding works (DynamoDB writable)
+3. An order is created (transaction + SQS publish)
+4. A replay with the same `Idempotency-Key` returns the original order
+5. `/ops/queue-health` reports SQS **readable** — a deploy whose task role cannot read SQS still
+   serves orders, so this would not show up as an unhealthy target and has to be asserted
+6. The order reaches a terminal status within a minute, proving the worker task is alive and
+   consuming from the same queue
+
+It runs against the ALB rather than CloudFront on purpose: a cached response could make a dead
+backend look alive, which is exactly what the step exists to catch.
+
+### CloudWatch
+
+The app publishes its own Micrometer meters through `micrometer-registry-cloudwatch2` into the
+`OrderOps` namespace, enabled by `CLOUDWATCH_METRICS_ENABLED` in the task definitions and off
+everywhere else. Without a registry those counters never leave the JVM, so alarming on
+"fulfillment failures" or "real-time delivery" would have had nothing to alarm on. Every metric
+is tagged with `app-mode`, so an alarm can target the API's WebSocket gauge without the
+worker's zero pulling the average down.
 
 ```bash
 bash infra/ecs/cloudwatch-alarms.sh
 ```
 
-Alarms created:
-- CPU > 80% on API and worker services
-- DLQ message count ≥ 1 (indicates persistent fulfillment failures)
-- Queue message age > 5 min (indicates worker is down)
-- Running task count < 1 on either service
+| Alarm | Signal |
+|---|---|
+| `orderops-{api,worker}-cpu-high` | CPU > 80% |
+| `orderops-{api,worker}-no-tasks` | running task count < 1 |
+| `orderops-queue-backlog` | main queue depth > 100 |
+| `orderops-queue-message-age` | oldest message > 5 min |
+| `orderops-dlq-not-empty` | any message in the DLQ |
+| `orderops-fulfillment-failures` | transient failure counter |
+| `orderops-orders-needing-review` | orders given up on |
+| `orderops-realtime-publish-failures` | event publishing broken |
+| `orderops-api-5xx` | ALB target 5xx |
+| `orderops-api-latency-p95` | ALB p95 > 2 s |
+| `orderops-api-unhealthy-targets` | any unhealthy target |
+
+Queue **depth** and **age** are both alarmed because either alone misses a real outage: a deep
+queue that is draining is a capacity signal, while an old message means consumption has stalled
+regardless of depth.
+
+`ApproximateAgeOfOldestMessage` lives here rather than in the `/ops/queue-health` API because it
+is a CloudWatch metric, not an SQS queue attribute — reading it from SQS would mean receiving a
+message, which advances its receive count and pushes it toward the DLQ.
 
 ---
 

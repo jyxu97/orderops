@@ -1,7 +1,7 @@
 .PHONY: local-up local-down local-init app-up app-down build test \
         web-install web-dev web-build web-test web-lint web-typecheck \
         load-test throughput-test ws-latency-test ws-latency-suite \
-        reliability-test failure-test
+        reliability-test failure-test smoke-test aws-setup
 
 # Lombok 1.18.32 is incompatible with Java 23+; use Corretto 21
 JAVA_HOME ?= /Users/ggq/Library/Java/JavaVirtualMachines/corretto-21.0.11/Contents/Home
@@ -89,3 +89,19 @@ reliability-test:
 
 failure-test:
 	bash load-tests/scripts/failure-test.sh
+
+# ── Deployment ──────────────────────────────────────────────────────────────
+
+# Post-deploy verification. Point BASE_URL at the ALB rather than CloudFront: a cached
+# response could make a dead backend look alive, which is what this exists to catch.
+BASE_URL ?= http://localhost:8080
+smoke-test:
+	BASE_URL=$(BASE_URL) bash infra/smoke-test.sh
+
+# One-time AWS infrastructure. Run the pieces in order; see the README for what each needs.
+aws-setup:
+	bash infra/ecs/setup.sh
+	@echo ""
+	@echo "Next: create the ECS services and ALB, then run"
+	@echo "  ALB_DNS=<alb-dns> bash infra/frontend/setup.sh"
+	@echo "  ALB_ID=<...> TARGET_GROUP_ID=<...> bash infra/ecs/cloudwatch-alarms.sh"

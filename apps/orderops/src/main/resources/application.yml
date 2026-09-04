@@ -54,6 +54,20 @@ spring:
       port: ${REDIS_PORT:6379}
 
 management:
+  # Off by default so local runs and tests make no AWS calls; the ECS task definitions turn it
+  # on. The namespace matches what infra/ecs/cloudwatch-alarms.sh alarms against.
+  cloudwatch:
+    metrics:
+      export:
+        enabled: ${CLOUDWATCH_METRICS_ENABLED:false}
+        namespace: ${CLOUDWATCH_NAMESPACE:OrderOps}
+        step: ${CLOUDWATCH_STEP:1m}
+        batch-size: 20
+  metrics:
+    tags:
+      # Every metric is tagged with the process role, so an alarm can target the API's
+      # WebSocket gauge without the worker's zero dragging the average down.
+      app-mode: ${APP_MODE:api}
   endpoints:
     web:
       exposure:

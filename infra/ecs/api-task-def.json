@@ -23,11 +23,14 @@
         { "name": "AWS_REGION",        "value": "us-west-2" },
         { "name": "REDIS_PORT",        "value": "6379" },
         { "name": "DYNAMODB_ENDPOINT", "value": "" },
-        { "name": "SQS_ENDPOINT",      "value": "" }
+        { "name": "SQS_ENDPOINT",      "value": "" },
+        { "name": "CLOUDWATCH_METRICS_ENABLED", "value": "true" },
+        { "name": "CLOUDWATCH_NAMESPACE",       "value": "OrderOps" }
       ],
       "secrets": [
         { "name": "REDIS_HOST",            "valueFrom": "/orderops/redis-host" },
-        { "name": "FULFILLMENT_QUEUE_URL", "valueFrom": "/orderops/fulfillment-queue-url" }
+        { "name": "FULFILLMENT_QUEUE_URL", "valueFrom": "/orderops/fulfillment-queue-url" },
+        { "name": "FULFILLMENT_DLQ_URL",   "valueFrom": "/orderops/fulfillment-dlq-url" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
