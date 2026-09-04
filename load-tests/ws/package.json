@@ -1,0 +1,10 @@
+{
+  "name": "orderops-ws-benchmark",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "WebSocket event-delivery latency harness for OrderOps",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

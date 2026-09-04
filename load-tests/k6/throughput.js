@@ -1,14 +1,16 @@
 /**
  * Throughput & Latency Load Test
  *
- * Measures p95/p99 latency and RPS for order creation under sustained load:
- * - Ramp up to 200 virtual users over 30s
- * - Sustain 200 VUs for 60s (~10K total requests)
- * - Ramp down over 10s
- * - Inventory pre-seeded to 50K (never runs out during test)
+ * Measures p95/p99 latency and RPS for order creation under sustained load.
+ *
+ * Concurrency is a parameter, not a constant: a latency figure is only meaningful alongside the
+ * load level it was measured at, so VUS is explicit and reported with every result.
+ * - Ramp to VUS over 30s, sustain 60s, ramp down 10s
+ * - Inventory pre-seeded to 50K (never runs out during the test)
  *
  * Run:
- *   k6 run -e BASE_URL=http://localhost:8080 -e ITEM_ID=throughput-item load-tests/k6/throughput.js
+ *   k6 run -e BASE_URL=http://localhost:8080 -e ITEM_ID=throughput-item \
+ *          -e VUS=200 load-tests/k6/throughput.js
  */
 
 import http from 'k6/http';
@@ -20,11 +22,12 @@ const errorRate    = new Rate('order_errors');
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
 const ITEM_ID  = __ENV.ITEM_ID  || 'throughput-item';
+const VUS      = Number(__ENV.VUS || 200);
 
 export const options = {
   stages: [
-    { duration: '30s', target: 200 },
-    { duration: '60s', target: 200 },
+    { duration: '30s', target: VUS },
+    { duration: '60s', target: VUS },
     { duration: '10s', target: 0   },
   ],
   thresholds: {

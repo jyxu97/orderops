@@ -502,27 +502,101 @@ GET /actuator/metrics/realtime.subscriptions.rejected
 
 ---
 
-## Load Tests
+## Benchmarks
+
+Full results, methodology and caveats: [`load-tests/results/README.md`](load-tests/results/README.md).
+Every number below comes from a run whose raw output is committed there.
+
+All figures are from a **single host** — API and worker as separate JVMs, with DynamoDB Local,
+LocalStack and Redis in Docker. They establish that the design behaves correctly under
+concurrency and that the real-time path is not the bottleneck; they are not capacity planning
+for a deployed system.
+
+### Real-time event delivery
+
+`order state committed to DynamoDB → event received by a subscribed client`
+
+| Clients | Established | Dropped | Events | Throughput | p50 | p95 | p99 |
+|--------:|------------:|--------:|-------:|-----------:|----:|----:|----:|
+| 100  | 100/100   | 0 | 10,000  | 1,319/s  | 3 ms  | 7 ms  | 15 ms |
+| 250  | 250/250   | 0 | 25,000  | 3,183/s  | 4 ms  | 14 ms | 30 ms |
+| 500  | 500/500   | 0 | 50,000  | 6,627/s  | 5 ms  | 14 ms | 21 ms |
+| 1000 | 1000/1000 | 0 | 100,000 | 12,972/s | 10 ms | 40 ms | 77 ms |
+
+```bash
+make ws-latency-suite    # the whole ladder
+make ws-latency-test CLIENTS=500
+```
+
+**Read the high-count figures as a range.** Three runs of the identical 1000-client
+configuration gave p95 of 40 ms, 26 ms and 51 ms — the harness holds all 1000 connections in one
+Node process and competes for cores with the very JVMs it is measuring, so this is the whole
+system co-located on one laptop rather than the server measured in isolation. p50 is stable;
+p95/p99 at the top two levels are not. What holds across every run is that p95 stayed under
+60 ms and no connection dropped.
+
+Two other things the measurement depends on: the harness runs on the same host as the API
+because each sample is a subtraction against a shared clock, and warmup samples are discarded
+because the first event through a cold JIT measures ~180 ms against a 2–3 ms steady state. Full
+methodology and the failed attempt to separate harness cost from server cost are in the
+[results README](load-tests/results/README.md).
 
 ### Concurrent checkout — zero oversell
 
-Fires 1000 virtual users concurrently against 100 units of inventory.
+100 units of stock, 1000 simultaneous checkout attempts:
+
+```
+checkout_success   100      PASS
+checkout_rejected  900      PASS
+http_req_failed    0.00%    PASS
+
+final inventory:   availableQuantity=0  reservedQuantity=100  version=100
+```
+
+`version=100` is the assertion that matters. The version counter increments once per successful
+conditional write, so landing on exactly 100 proves exactly 100 reservations committed against
+100 units — no oversell, and no lost update.
 
 ```bash
 make load-test
 ```
 
-Expected result: exactly 100 orders succeed (HTTP 201), 900 rejected (HTTP 409), zero 5xx.
+### Order-creation latency
 
-### Failure injection
+Concurrency is part of the result, not a footnote — the same endpoint differs by 7x across
+these two runs:
 
-Seeds 10 units, fires 200 VUs, verifies the API returns only 201/409 with no errors.
+| Sustained VUs | Throughput | avg | p95 | p99 | Errors |
+|--------------:|-----------:|----:|----:|----:|-------:|
+| 20  | 249 orders/s | 64 ms  | **112 ms** | 201 ms  | 0% |
+| 200 | 373 orders/s | 430 ms | **827 ms** | 1.46 s  | 0% |
 
 ```bash
-make failure-test
+make throughput-test              # 200 VUs
+make throughput-test VUS=20
 ```
 
----
+An earlier pre-upgrade run measured p95 67 ms at 20 VUs. The current 112 ms is the cost of
+snapshotting catalog prices at checkout, which adds a `BatchGetItem` to the hot path before the
+transaction. That is a deliberate trade — it is what stops a later price change from rewriting
+the value of an existing order — but it means the older figure should not be quoted for the
+current code.
+
+### Reliability
+
+```bash
+make reliability-test    # duplicate checkout, DLQ isolation, dead-letter recovery
+make failure-test        # failure-injection smoke: only 201/409, no 5xx
+```
+
+| Scenario | Result |
+|---|---|
+| Duplicate checkout | 100/100 duplicates returned the original `orderId`; inventory deducted once per key |
+| Permanent failure → DLQ | 10/10 poison messages isolated in the DLQ, source queue drained |
+| Dead-letter recovery | 5 orders parked mid-flight by exhausted retries all resumed to `FULFILLED` after redrive; a concurrent redrive was rejected with 409 |
+
+These need an isolated queue and order table — see the results README for why a shared local
+stack carrying state from a throughput run makes the counts unattributable.
 
 ## AWS Deployment
 
@@ -582,56 +656,3 @@ Terminal orders (`FULFILLED`, `NEEDS_MANUAL_REVIEW`) are skipped on duplicate de
 
 ---
 
-## Benchmark Results
-
-All tests run locally with Docker Compose (DynamoDB Local, LocalStack SQS, Redis).
-
-### Throughput & Latency (20 VUs, 90s sustained)
-
-| Metric | Value |
-|--------|-------|
-| Total orders created | 44,788 |
-| Throughput | 497 req/s |
-| Avg latency | 40 ms |
-| p90 latency | 57 ms |
-| p95 latency | 67 ms |
-| p99 latency | 121 ms |
-| Error rate | 0% |
-
-### Concurrent Checkout Correctness (1,000 VUs, 100 inventory units)
-
-| Metric | Value |
-|--------|-------|
-| Concurrent requests | 1,000 |
-| Successful reservations | 100 |
-| Rejected (out of stock) | 900 |
-| Oversold inventory | 0 |
-| 5xx errors | 0 |
-
-### Idempotency (10 keys × 10 duplicate requests)
-
-| Metric | Value |
-|--------|-------|
-| Original orders created | 10 |
-| Duplicate requests sent | 100 |
-| Returned same orderId | 100 (100%) |
-| Extra inventory deductions | 0 |
-
-### Transient Failure Retry Recovery (50 orders, 10% random failure rate)
-
-| Metric | Value |
-|--------|-------|
-| Orders submitted | 50 |
-| FULFILLED | 50 (100%) |
-| DLQ messages | 0 |
-| No silent loss | ✓ |
-
-### Permanent Poison Message → DLQ (10 always-failing orders, maxReceiveCount=3)
-
-| Metric | Value |
-|--------|-------|
-| Poison orders submitted | 10 |
-| Routed to DLQ | 10 (100%) |
-| Source queue after test | 0 |
-| Worker attempt logs | ~30 (3 per message) |
-Transient failures re-throw so SQS redelivers; after 3 attempts the message goes to the DLQ.

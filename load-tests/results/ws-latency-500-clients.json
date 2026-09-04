@@ -1,0 +1,37 @@
+{
+  "label": "500-clients",
+  "recordedAt": "2026-09-03T22:24:25.178Z",
+  "config": {
+    "clients": 500,
+    "orders": 20,
+    "itemsPerOrder": 1,
+    "warmupOrders": 5,
+    "api": "http://localhost:8080"
+  },
+  "connections": {
+    "requested": 500,
+    "established": 500,
+    "connectFailures": 0,
+    "unexpectedCloses": 0,
+    "serverReportedAtStart": 500,
+    "serverReportedAtEnd": 500
+  },
+  "delivery": {
+    "eventsReceived": 50000,
+    "malformed": 0,
+    "durationMs": 7545,
+    "eventsPerSecond": 6626.9
+  },
+  "latencyMs": {
+    "count": 50000,
+    "min": 1,
+    "p50": 5,
+    "p95": 14,
+    "p99": 21,
+    "max": 34,
+    "mean": 5.68
+  },
+  "server": {
+    "jvmMemoryUsedMb": 212.7
+  }
+}

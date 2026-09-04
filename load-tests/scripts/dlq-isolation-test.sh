@@ -33,10 +33,23 @@ echo "Item: $ITEM_ID | Poison orders: $POISON_COUNT | maxReceiveCount=3 | backof
 echo ""
 
 # Clear DLQ first
-echo "[1/6] Purging DLQ..."
-aws --endpoint-url "$SQS_ENDPOINT" --region "$REGION" sqs purge-queue \
-  --queue-url "$SQS_ENDPOINT/000000000000/order-fulfillment-dlq" 2>/dev/null || true
-sleep 2
+# Both queues, not just the DLQ. A backlog left on the source queue by an earlier test gets
+# consumed by this test's deliberately-failing worker and dead-letters alongside the poison
+# messages, so the DLQ count stops being attributable and the assertion becomes meaningless.
+echo "[1/6] Purging source queue and DLQ..."
+for q in order-fulfillment-queue order-fulfillment-dlq; do
+  aws --endpoint-url "$SQS_ENDPOINT" --region "$REGION" sqs purge-queue \
+    --queue-url "$SQS_ENDPOINT/000000000000/$q" 2>/dev/null || true
+done
+# SQS may take up to 60s to finish a purge; poll instead of guessing.
+for _ in $(seq 1 30); do
+  depth=$(aws --endpoint-url "$SQS_ENDPOINT" --region "$REGION" sqs get-queue-attributes \
+    --queue-url "$SQS_ENDPOINT/000000000000/order-fulfillment-queue" \
+    --attribute-names ApproximateNumberOfMessages \
+    --query 'Attributes.ApproximateNumberOfMessages' --output text 2>/dev/null || echo 0)
+  [ "$depth" = "0" ] && break
+  sleep 2
+done
 
 # Seed inventory
 echo "[2/6] Seeding inventory (qty=$POISON_COUNT)..."
