@@ -73,10 +73,20 @@ public class FulfillmentWorker {
         }
     }
 
-    /** Backoff: baseBackoffSeconds × 2^(attempt-1), capped at maxBackoffSeconds. */
+    /**
+     * Backoff: baseBackoffSeconds × 2^(attempt-1), capped at maxBackoffSeconds.
+     *
+     * <p>Computed in {@code long} and with the exponent clamped. In {@code int} arithmetic the
+     * shift overflows once the receive count passes the high twenties and the result goes
+     * negative — {@code base=30, attempt=31} yields -2147483648 — which SQS rejects, so the
+     * visibility extension silently fails and the message redelivers immediately instead of
+     * backing off. A redrive policy with a high {@code maxReceiveCount}, or a message redriven
+     * more than once, is enough to reach that range.
+     */
     private int computeBackoff(int attempt) {
-        int backoff = baseBackoffSeconds * (1 << Math.max(0, attempt - 1));
-        return Math.min(backoff, maxBackoffSeconds);
+        int exponent = Math.min(Math.max(0, attempt - 1), Integer.SIZE - 2);
+        long backoff = (long) baseBackoffSeconds << exponent;
+        return (int) Math.min(backoff, maxBackoffSeconds);
     }
 
     private int parseReceiveCount(Message message) {

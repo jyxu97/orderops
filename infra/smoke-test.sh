@@ -31,10 +31,15 @@ check_status "GET /actuator/health/serving" 200 \
   "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$BASE_URL/actuator/health/serving")"
 
 echo "[2/6] Seeding a throwaway item"
-check_status "POST /api/v1/inventory/seed" 201 \
-  "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST "$BASE_URL/api/v1/inventory/seed" \
-      -H 'Content-Type: application/json' \
-      -d "{\"itemId\":\"$ITEM_ID\",\"itemName\":\"Smoke Test\",\"quantity\":2,\"unitPrice\":1.00}")"
+# The JSON body is built into a variable rather than written inline inside the command
+# substitution. Escaped quotes within a double-quoted "$( ... )" collapse: the braces then
+# brace-expand into four separate requests and the result word-splits. Assigning first keeps
+# one level of quoting and one request.
+SEED_BODY="{\"itemId\":\"$ITEM_ID\",\"itemName\":\"Smoke Test\",\"quantity\":2,\"unitPrice\":1.00}"
+SEED_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+  -X POST "$BASE_URL/api/v1/inventory/seed" \
+  -H 'Content-Type: application/json' -d "$SEED_BODY")
+check_status "POST /api/v1/inventory/seed" 201 "$SEED_CODE"
 
 echo "[3/6] Creating an order (DynamoDB transaction + SQS publish)"
 IDEMPOTENCY_KEY="smoke-$(date +%s)-$RANDOM"
