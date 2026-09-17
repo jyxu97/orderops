@@ -40,10 +40,23 @@ public class IdempotencyRepository {
             .build();
     }
 
+    /**
+     * Reads an idempotency record with a strongly consistent read.
+     *
+     * <p>Consistency is required, not an optimisation choice. This is called after a
+     * TransactWriteItems has already reported that the key exists, so the record is known to be
+     * committed — but DynamoDB's default eventually consistent read can still miss a write made
+     * microseconds earlier, which is exactly the timing of a client retrying a request that
+     * timed out. An eventually consistent read here would intermittently fail to find a record
+     * the database just told us about.
+     *
+     * <p>The doubled read cost is irrelevant: this path only runs for duplicate requests.
+     */
     public Optional<IdempotencyRecord> findByKey(String idempotencyKey) {
         var resp = dynamoDb.getItem(GetItemRequest.builder()
             .tableName(tableName)
             .key(Map.of("idempotencyKey", AttributeValue.fromS(idempotencyKey)))
+            .consistentRead(true)
             .build());
 
         if (!resp.hasItem()) {

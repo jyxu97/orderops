@@ -32,35 +32,44 @@ public class IdempotencyService {
     private final ObjectMapper objectMapper;
 
     /**
-     * Looks up a cached response for the given idempotency key.
+     * Resolves a request whose idempotency key already exists.
+     *
+     * <p>Called only after a TransactWriteItems has failed its
+     * {@code attribute_not_exists(idempotencyKey)} condition — so the key is known to exist and
+     * this is not a speculative lookup. There is deliberately no pre-check before the
+     * transaction: the conditional write is strongly consistent and already decides the
+     * question, so reading first would only add two round trips to every *new* order to save
+     * one on the rare duplicate.
      *
      * <ol>
-     *   <li>Fast path: Redis ({@code idem:{key}})</li>
-     *   <li>Slow path: DynamoDB IdempotencyRecords (backfills Redis on hit)</li>
+     *   <li>Redis ({@code idem:{key}}) — saves a DynamoDB read when duplicates are frequent</li>
+     *   <li>DynamoDB, strongly consistent — the authority, and correct even when Redis is cold,
+     *       stale or down</li>
      * </ol>
      *
-     * @return the cached {@link CreateOrderResponse} if the key was seen before with the same
-     *         request hash; {@code null} if this is a brand-new request
-     * @throws IdempotencyConflictException if the key exists but was used with a different body
+     * @return the response the original request returned
+     * @throws IdempotencyConflictException if the key was reused with a different body
+     * @throws IllegalStateException if neither store has the record, which would mean the
+     *         conditional check and the data disagree
      */
-    public CreateOrderResponse findCachedResponse(String idempotencyKey, String requestHash) {
-        // 1. Redis fast path
+    public CreateOrderResponse resolveDuplicate(String idempotencyKey, String requestHash) {
         String cachedJson = safeRedisGet(idempotencyKey);
         if (cachedJson != null) {
-            log.debug("Idempotency cache hit (Redis) key={}", idempotencyKey);
+            log.debug("Duplicate resolved from Redis key={}", idempotencyKey);
             return validateAndBuild(cachedJson, requestHash, idempotencyKey);
         }
 
-        // 2. DynamoDB slow path
         Optional<IdempotencyRecord> record = idempotencyRepository.findByKey(idempotencyKey);
         if (record.isPresent()) {
-            log.debug("Idempotency cache hit (DynamoDB) key={}", idempotencyKey);
+            log.debug("Duplicate resolved from DynamoDB key={}", idempotencyKey);
             String json = toJson(record.get());
-            safeRedisSet(idempotencyKey, json); // backfill
+            safeRedisSet(idempotencyKey, json); // warm the cache for any further retries
             return validateAndBuild(json, requestHash, idempotencyKey);
         }
 
-        return null; // new request
+        throw new IllegalStateException(
+            "Idempotency key " + idempotencyKey + " failed its attribute_not_exists condition "
+                + "but no record was found on a consistent read");
     }
 
     /**

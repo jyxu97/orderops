@@ -81,16 +81,12 @@ public class OrderService {
      * </ul>
      */
     public CreateOrderResponse createOrder(CreateOrderRequest request, String idempotencyKey) {
-        // 1. Idempotency check (Redis fast path → DynamoDB slow path)
-        String requestHash = null;
-        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-            requestHash = idempotencyService.computeRequestHash(request);
-            CreateOrderResponse cached = idempotencyService.findCachedResponse(idempotencyKey, requestHash);
-            if (cached != null) {
-                log.info("Returning cached response for Idempotency-Key={}", idempotencyKey);
-                return cached;
-            }
-        }
+        // 1. Hash the request so the idempotency record can carry it. Deliberately no lookup
+        //    here: the transaction's attribute_not_exists condition is strongly consistent and
+        //    already decides whether this key has been seen, so a pre-check would cost two
+        //    round trips on every new order to save one on the rare duplicate.
+        boolean hasIdempotencyKey = idempotencyKey != null && !idempotencyKey.isBlank();
+        String requestHash = hasIdempotencyKey ? idempotencyService.computeRequestHash(request) : null;
 
         // 2. Validate state transition
         stateMachine.validateTransition(OrderStatus.CREATED, OrderStatus.INVENTORY_RESERVED);
@@ -150,7 +146,7 @@ public class OrderService {
             .put(orderRepository.toPutForTransaction(order))
             .build());
 
-        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+        if (hasIdempotencyKey) {
             IdempotencyRecord record = IdempotencyRecord.builder()
                 .idempotencyKey(idempotencyKey)
                 .requestHash(requestHash)
@@ -173,7 +169,22 @@ public class OrderService {
             List<CancellationReason> reasons = e.cancellationReasons();
             int n = request.getItems().size();
 
-            // Check inventory positions [0..N-1] for insufficient stock.
+            // Idempotency is checked BEFORE inventory, and the order matters. Both conditions
+            // can fail in the same transaction — a client retrying a timed-out request for an
+            // item that has since sold out fails the stock check and the key check at once.
+            // "Already processed" has to win: the order exists and is holding that stock, so
+            // reporting insufficient inventory would tell the client its order failed while the
+            // order sits committed in DynamoDB.
+            int idemIdx = n + 1;
+            if (hasIdempotencyKey
+                    && idemIdx < reasons.size()
+                    && CONDITIONAL_CHECK_FAILED.equals(reasons.get(idemIdx).code())) {
+                log.info("Idempotency key {} already used, returning the original order", idempotencyKey);
+                meterRegistry.counter("orders.idempotent_replay").increment();
+                return idempotencyService.resolveDuplicate(idempotencyKey, requestHash);
+            }
+
+            // Only now is a failed stock condition the real reason.
             for (int i = 0; i < n; i++) {
                 if (i < reasons.size() && CONDITIONAL_CHECK_FAILED.equals(reasons.get(i).code())) {
                     String itemId = request.getItems().get(i).getItemId();
@@ -181,25 +192,6 @@ public class OrderService {
                     meterRegistry.counter("orders.inventory_rejected").increment();
                     throw new InsufficientInventoryException(itemId, quantity);
                 }
-            }
-
-            // Check idempotency position [N+1]: ConditionalCheckFailed here means a concurrent
-            // request with the same key won the race. Fetch and return its committed result.
-            int idemIdx = n + 1;
-            if (idempotencyKey != null && !idempotencyKey.isBlank()
-                    && idemIdx < reasons.size()
-                    && CONDITIONAL_CHECK_FAILED.equals(reasons.get(idemIdx).code())) {
-                log.info("Idempotency race condition detected for key={}, fetching winner's record", idempotencyKey);
-                return idempotencyRepository.findByKey(idempotencyKey)
-                    .map(rec -> CreateOrderResponse.builder()
-                        .orderId(rec.getOrderId())
-                        .status(rec.getOrderStatus())
-                        .totalAmount(rec.getTotalAmount())
-                        .createdAt(rec.getCreatedAt())
-                        .replayed(true)
-                        .build())
-                    .orElseThrow(() -> new RuntimeException(
-                        "Idempotency race: ConditionalCheckFailed but record missing for key: " + idempotencyKey));
             }
 
             throw new RuntimeException("Transaction failed unexpectedly: " + e.getMessage(), e);
@@ -224,8 +216,10 @@ public class OrderService {
             .createdAt(now)
             .build();
 
-        // 8. Cache idempotency record in Redis (DynamoDB write already handled in transaction)
-        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+        // 8. Warm the Redis cache so a later retry of this key resolves without a DynamoDB
+        //    read. Purely an optimisation for the duplicate path — the record is already
+        //    durable, written inside the transaction above.
+        if (hasIdempotencyKey) {
             idempotencyService.cacheResponseInRedis(idempotencyKey, requestHash, response);
         }
 

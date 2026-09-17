@@ -50,18 +50,18 @@ class IdempotencyServiceTest {
     }
 
     // ------------------------------------------------------------------
-    // findCachedResponse
+    // resolveDuplicate
     // ------------------------------------------------------------------
 
     @Test
-    void findCachedResponse_redisHit_sameHash_returnsCachedOrder() throws Exception {
+    void resolveDuplicate_redisHit_sameHash_returnsOriginalOrder() throws Exception {
         String key = "key-1";
         String hash = "abc123";
         String json = buildRecordJson(key, hash, "order-1", "INVENTORY_RESERVED", "2026-01-01T00:00:00Z");
 
         when(valueOps.get("idem:" + key)).thenReturn(json);
 
-        CreateOrderResponse result = idempotencyService.findCachedResponse(key, hash);
+        CreateOrderResponse result = idempotencyService.resolveDuplicate(key, hash);
 
         assertNotNull(result);
         assertEquals("order-1", result.getOrderId());
@@ -69,18 +69,18 @@ class IdempotencyServiceTest {
     }
 
     @Test
-    void findCachedResponse_redisHit_differentHash_throwsConflict() throws Exception {
+    void resolveDuplicate_redisHit_differentHash_throwsConflict() throws Exception {
         String key = "key-conflict";
         String storedJson = buildRecordJson(key, "hash-original", "order-x", "INVENTORY_RESERVED", "2026-01-01T00:00:00Z");
 
         when(valueOps.get("idem:" + key)).thenReturn(storedJson);
 
         assertThrows(IdempotencyConflictException.class,
-            () -> idempotencyService.findCachedResponse(key, "hash-different"));
+            () -> idempotencyService.resolveDuplicate(key, "hash-different"));
     }
 
     @Test
-    void findCachedResponse_redisMiss_dynamoHit_backfillsRedisAndReturns() throws Exception {
+    void resolveDuplicate_redisMiss_dynamoHit_backfillsRedisAndReturns() throws Exception {
         String key = "key-dynamo";
         String hash = "hashX";
 
@@ -95,7 +95,7 @@ class IdempotencyServiceTest {
                 .build()
         ));
 
-        CreateOrderResponse result = idempotencyService.findCachedResponse(key, hash);
+        CreateOrderResponse result = idempotencyService.resolveDuplicate(key, hash);
 
         assertNotNull(result);
         assertEquals("order-dynamo", result.getOrderId());
@@ -104,13 +104,17 @@ class IdempotencyServiceTest {
     }
 
     @Test
-    void findCachedResponse_redisMiss_dynamoMiss_returnsNull() {
-        String key = "key-new";
-
+    void resolveDuplicate_recordMissingEverywhere_throwsIllegalState() {
+        String key = "key-missing";
         when(valueOps.get("idem:" + key)).thenReturn(null);
         when(idempotencyRepository.findByKey(key)).thenReturn(Optional.empty());
 
-        assertNull(idempotencyService.findCachedResponse(key, "anyHash"));
+        // This method only runs after attribute_not_exists(idempotencyKey) has already failed,
+        // so the key provably exists. Finding nothing on a consistent read means the condition
+        // and the data disagree — surfaced loudly rather than mistaken for a new request, which
+        // is what returning null here used to imply.
+        assertThrows(IllegalStateException.class,
+            () -> idempotencyService.resolveDuplicate(key, "anyHash"));
     }
 
     // ------------------------------------------------------------------

@@ -20,6 +20,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -168,5 +169,87 @@ class OrderIdempotencyTest {
         String orderId2 = objectMapper.readTree(resp2).get("orderId").asText();
 
         assert !orderId1.equals(orderId2) : "Without idempotency key, each request must create a distinct order";
+    }
+
+    @Test
+    void sameKeyRetried_afterStockRanOut_returnsTheOriginalOrder() throws Exception {
+        // The timeout-retry case that matters most, and the one where precedence decides the
+        // answer: a client's first request succeeded but its response was lost, the item has
+        // since sold out, and it retries with the same key.
+        //
+        // Both of the transaction's conditions now fail — no stock, and the idempotency key
+        // already exists. "This request was already processed" has to win, because the order
+        // genuinely exists. Reporting insufficient inventory would tell the client its order
+        // failed while the order sits in DynamoDB, holding stock.
+        String soldOutItem = "widget-soldout-" + java.util.UUID.randomUUID();
+        mockMvc.perform(post("/api/v1/inventory/seed")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"itemId": "%s", "quantity": 1, "unitPrice": 5.00}
+                    """.formatted(soldOutItem)))
+            .andExpect(status().isCreated());
+
+        String body = """
+            {"customerId": "customer-soldout", "items": [{"itemId": "%s", "quantity": 1}]}
+            """.formatted(soldOutItem);
+        String key = "soldout-retry-" + java.util.UUID.randomUUID();
+
+        String first = mockMvc.perform(post("/api/v1/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", key)
+                .content(body))
+            .andExpect(status().isCreated())
+            .andReturn().getResponse().getContentAsString();
+        String orderId = objectMapper.readTree(first).get("orderId").asText();
+
+        // Stock is now exhausted.
+        mockMvc.perform(get("/api/v1/inventory/" + soldOutItem))
+            .andExpect(jsonPath("$.availableQuantity").value(0));
+
+        mockMvc.perform(post("/api/v1/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", key)
+                .content(body))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.orderId").value(orderId))
+            .andExpect(jsonPath("$.replayed").value(true));
+
+        // And the replay must not have reserved a second unit.
+        mockMvc.perform(get("/api/v1/inventory/" + soldOutItem))
+            .andExpect(jsonPath("$.availableQuantity").value(0))
+            .andExpect(jsonPath("$.reservedQuantity").value(1));
+    }
+
+    @Test
+    void sameKeyDifferentBody_afterStockRanOut_stillReports409Conflict() throws Exception {
+        // Same precedence question, opposite expected answer: the key was reused with a
+        // different body, so this is a client bug rather than a retry, and the conflict must
+        // surface even though inventory also failed.
+        String soldOutItem = "widget-conflict-" + java.util.UUID.randomUUID();
+        mockMvc.perform(post("/api/v1/inventory/seed")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"itemId": "%s", "quantity": 1, "unitPrice": 5.00}
+                    """.formatted(soldOutItem)))
+            .andExpect(status().isCreated());
+
+        String key = "conflict-soldout-" + java.util.UUID.randomUUID();
+        mockMvc.perform(post("/api/v1/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", key)
+                .content("""
+                    {"customerId": "customer-a", "items": [{"itemId": "%s", "quantity": 1}]}
+                    """.formatted(soldOutItem)))
+            .andExpect(status().isCreated());
+
+        mockMvc.perform(post("/api/v1/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", key)
+                .content("""
+                    {"customerId": "customer-b", "items": [{"itemId": "%s", "quantity": 1}]}
+                    """.formatted(soldOutItem)))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.message")
+                .value(org.hamcrest.Matchers.containsString("different request body")));
     }
 }

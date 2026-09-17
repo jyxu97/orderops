@@ -74,7 +74,7 @@ makes a double release abort rather than conjure stock out of nothing.
 | API          | Java 21, Spring Boot 3, Lombok      |
 | Database     | AWS DynamoDB (conditional writes)   |
 | Queue        | AWS SQS + DLQ                       |
-| Cache        | Redis (idempotency fast path)       |
+| Cache        | Redis (duplicate resolution + event bus) |
 | Metrics      | Spring Boot Actuator + Micrometer   |
 | Tests        | JUnit 5, Mockito, DynamoDB Local, Vitest |
 | Load Tests   | k6                                  |
@@ -754,9 +754,33 @@ message, which advances its receive count and pushes it toward the DLQ.
 `UpdateItem` with `availableQuantity >= :requested` condition prevents oversell without locks,
 even under concurrent requests.
 
-**Idempotency two-layer cache**
-Redis fast path (24-hour TTL) with DynamoDB as the persistent source of truth. Same key +
-same body returns the original response; same key + different body returns 409.
+**Idempotency: conditional write first, no pre-check**
+`POST /orders` does not look the key up before acting. The transaction's
+`attribute_not_exists(idempotencyKey)` condition is strongly consistent and already decides
+whether the key has been seen, so a pre-check would add two round trips to every *new* order to
+save one on the rare duplicate. A duplicate is resolved on the failure path instead: Redis
+first (24-hour TTL, saves a read when duplicates are frequent), then a **strongly consistent**
+DynamoDB read.
+
+That read must be consistent, not eventually consistent. It runs after the conditional write
+has already reported the key exists, and a default read can still miss a write made
+microseconds earlier — which is exactly the timing of a client retrying a request that timed
+out.
+
+Same key + same body returns the original response; same key + different body returns 409.
+
+A Redis outage costs a DynamoDB read on duplicates and nothing else. Correctness lives entirely
+in the conditional write, which is why "what if Redis goes down" has a boring answer here, and
+why a Redis `SETNX` lock would be worse: it would make Redis a correctness dependency (a lock
+acquired on a primary can be lost on failover) while still not providing the one thing an
+idempotency key exists for — returning the *original response* to a retry.
+
+**Idempotency outranks inventory when both conditions fail**
+One transaction can fail both checks at once: a client retries a timed-out request for an item
+that has since sold out. "Already processed" has to win, because the order genuinely exists and
+is holding that stock. Reporting insufficient inventory would tell the client its order failed
+while the order sits committed in DynamoDB. Covered by
+`sameKeyRetried_afterStockRanOut_returnsTheOriginalOrder`.
 
 **Resume-aware fulfillment worker**
 If a transient failure leaves an order in `PAYMENT_PROCESSING`, the next SQS redelivery
