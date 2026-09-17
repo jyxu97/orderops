@@ -1,6 +1,7 @@
 package com.orderops.worker;
 
 import com.orderops.api.repository.AuditLogRepository;
+import com.orderops.api.repository.InventoryRepository;
 import com.orderops.api.repository.OrderRepository;
 import com.orderops.realtime.OrderEventPublisher;
 import com.orderops.shared.exception.OrderStatusConflictException;
@@ -14,7 +15,15 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.dynamodb.model.CancellationReason;
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
+import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException;
+
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Drives an order through its full fulfillment lifecycle:
@@ -39,7 +48,11 @@ import java.time.Instant;
 public class OrderFulfillmentService {
 
     private final OrderRepository orderRepository;
+    private static final String CONDITIONAL_CHECK_FAILED = "ConditionalCheckFailed";
+
     private final AuditLogRepository auditLogRepository;
+    private final InventoryRepository inventoryRepository;
+    private final DynamoDbClient dynamoDb;
     private final OrderStateMachine stateMachine;
     private final PaymentSimulator paymentSimulator;
     private final ShipmentSimulator shipmentSimulator;
@@ -139,18 +152,60 @@ public class OrderFulfillmentService {
      * Validates the transition, persists the new status to DynamoDB, writes an audit log,
      * and returns the updated in-memory {@link Order} for chaining subsequent transitions.
      */
+    /**
+     * Validates, commits and announces one transition.
+     *
+     * <p>The order update and its audit entry go in a single transaction, and the move to
+     * FULFILLED additionally settles every line item's reservation. Previously the status
+     * change was one conditional update followed by a best-effort audit write, so a process
+     * dying in between produced a transition with no audit entry — a gap that shows up in the
+     * operations failures view, which reads exactly that entry to explain a failure.
+     *
+     * <p>Bundling the settlement here is also what makes it safe against redelivery: the
+     * order's own condition ({@code status = :expectedStatus}) fails on a replay, and DynamoDB
+     * rolls the settlement back with it. A settle issued as its own call would apply twice.
+     */
     private Order applyTransition(Order order, OrderStatus newStatus, String reason) {
         stateMachine.validateTransition(order.getStatus(), newStatus);
-        orderRepository.advanceStatus(order.getOrderId(), order.getStatus(), newStatus);
 
         String now = Instant.now().toString();
-        auditLogRepository.save(OrderAuditLog.builder()
+        List<TransactWriteItem> writes = new ArrayList<>();
+
+        // Position [0] is the order, which is what the conflict handling below inspects.
+        writes.add(orderRepository.buildAdvanceStatusTransactItem(
+            order.getOrderId(), order.getStatus(), newStatus, now));
+        writes.add(auditLogRepository.buildSaveTransactItem(OrderAuditLog.builder()
             .orderId(order.getOrderId())
             .timestamp(now)
             .fromStatus(order.getStatus().name())
             .toStatus(newStatus.name())
             .reason(reason)
-            .build());
+            .build()));
+
+        if (newStatus == OrderStatus.FULFILLED) {
+            // The stock has physically shipped: stop holding it and stop owning it.
+            order.getItems().forEach(item ->
+                writes.add(inventoryRepository.buildSettleTransactItem(item.getItemId(), item.getQuantity())));
+        }
+
+        try {
+            dynamoDb.transactWriteItems(TransactWriteItemsRequest.builder()
+                .transactItems(writes)
+                .build());
+        } catch (TransactionCanceledException e) {
+            List<CancellationReason> reasons = e.cancellationReasons();
+            CancellationReason orderReason = reasons.isEmpty() ? null : reasons.get(0);
+
+            if (orderReason != null && CONDITIONAL_CHECK_FAILED.equals(orderReason.code())) {
+                throw new OrderStatusConflictException(
+                    order.getOrderId(), order.getStatus(), OrderRepository.statusFrom(orderReason));
+            }
+            // An inventory or audit condition failed instead. Nothing here is expected to fail
+            // once the order's own check passed, so surface it rather than dressing it up.
+            throw new IllegalStateException(
+                "Transition of order " + order.getOrderId() + " to " + newStatus
+                    + " was cancelled: " + e.getMessage(), e);
+        }
 
         log.info("Order {} {} → {}", order.getOrderId(), order.getStatus(), newStatus);
 

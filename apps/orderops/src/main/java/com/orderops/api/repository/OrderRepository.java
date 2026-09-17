@@ -135,6 +135,13 @@ public class OrderRepository {
      * what the concurrent-checkout benchmark asserts against to rule out lost updates — and the
      * count stays right even when writes the caller never saw have landed in between.
      *
+     * <p>Note on callers: the fulfillment worker does not use this method. It commits each
+     * transition through {@link #buildAdvanceStatusTransactItem} instead, so the status change
+     * travels in one transaction with its audit entry and, on shipment, the inventory
+     * settlement. This standalone form is for advancing a single order on its own — currently
+     * only test fixtures — and the two deliberately share the same condition and version
+     * semantics so that either reads the same way.
+     *
      * @throws OrderStatusConflictException if the order has moved on, carrying the status found
      */
     public void advanceStatus(String orderId, OrderStatus expectedStatus, OrderStatus newStatus) {
@@ -159,6 +166,43 @@ public class OrderRepository {
         } catch (ConditionalCheckFailedException e) {
             throw new OrderStatusConflictException(orderId, expectedStatus, statusOf(e));
         }
+    }
+
+    /**
+     * The transaction form of {@link #advanceStatus}, for committing a status change together
+     * with the other writes that belong to it.
+     *
+     * @param now timestamp shared with the audit entry in the same transaction, so the two
+     *            agree on when the transition happened
+     */
+    public TransactWriteItem buildAdvanceStatusTransactItem(
+        String orderId, OrderStatus expectedStatus, OrderStatus newStatus, String now) {
+
+        return TransactWriteItem.builder()
+            .update(Update.builder()
+                .tableName(tableName)
+                .key(Map.of("orderId", AttributeValue.fromS(orderId)))
+                .updateExpression("SET #st = :newStatus, updatedAt = :now ADD #ver :one")
+                .conditionExpression("#st = :expectedStatus")
+                .expressionAttributeNames(Map.of("#st", "status", "#ver", "version"))
+                .expressionAttributeValues(Map.of(
+                    ":newStatus",      AttributeValue.fromS(newStatus.name()),
+                    ":expectedStatus", AttributeValue.fromS(expectedStatus.name()),
+                    ":one",            AttributeValue.fromN("1"),
+                    ":now",            AttributeValue.fromS(now)
+                ))
+                .returnValuesOnConditionCheckFailure(
+                    ReturnValuesOnConditionCheckFailure.ALL_OLD)
+                .build())
+            .build();
+    }
+
+    /** Reads the status out of a {@code CancellationReason} for a rejected order update. */
+    public static OrderStatus statusFrom(CancellationReason reason) {
+        if (reason == null || !reason.hasItem() || reason.item().get("status") == null) {
+            return null;
+        }
+        return OrderStatus.valueOf(reason.item().get("status").s());
     }
 
     /** Reads the status out of a rejected write's returned item, or null if none came back. */

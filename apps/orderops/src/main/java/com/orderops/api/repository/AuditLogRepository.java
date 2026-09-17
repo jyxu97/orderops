@@ -8,7 +8,9 @@ import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.Put;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
 
 import java.util.HashMap;
 import java.util.List;
@@ -27,6 +29,13 @@ public class AuditLogRepository {
     private String tableName;
 
     public void save(OrderAuditLog log) {
+        dynamoDb.putItem(PutItemRequest.builder()
+            .tableName(tableName)
+            .item(toItem(log))
+            .build());
+    }
+
+    private static Map<String, AttributeValue> toItem(OrderAuditLog log) {
         Map<String, AttributeValue> item = new HashMap<>();
         item.put("orderId",    AttributeValue.fromS(log.getOrderId()));
         item.put("timestamp",  AttributeValue.fromS(log.getTimestamp()));
@@ -35,11 +44,25 @@ public class AuditLogRepository {
         if (log.getReason() != null) {
             item.put("reason", AttributeValue.fromS(log.getReason()));
         }
+        return item;
+    }
 
-        dynamoDb.putItem(PutItemRequest.builder()
-            .tableName(tableName)
-            .item(item)
-            .build());
+    /**
+     * Returns a TransactWriteItem for the same record {@link #save} writes.
+     *
+     * <p>Lets the audit entry commit in the same transaction as the status change it describes.
+     * Written separately the two could diverge: a process dying between them leaves a
+     * transition with no audit entry, and the operations failures view reads exactly that entry
+     * to explain why an order failed — so the gap appears precisely when someone is trying to
+     * diagnose a failure.
+     */
+    public TransactWriteItem buildSaveTransactItem(OrderAuditLog log) {
+        return TransactWriteItem.builder()
+            .put(Put.builder()
+                .tableName(tableName)
+                .item(toItem(log))
+                .build())
+            .build();
     }
 
     /**

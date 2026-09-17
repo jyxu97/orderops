@@ -298,4 +298,51 @@ class OrderControllerTest {
             .andExpect(status().isNotFound())
             .andExpect(jsonPath("$.status").value(404));
     }
+
+    @Test
+    void postOrders_repeatedItemId_returns400NotServerError() throws Exception {
+        // DynamoDB rejects a TransactWriteItems with two operations on the same item, so this
+        // previously surfaced as a 500. It is a client mistake, and there is no variant concept
+        // that would make a repeated SKU meaningful.
+        mockMvc.perform(post("/api/v1/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"customerId": "customer-dup", "items": [
+                       {"itemId": "%s", "quantity": 1},
+                       {"itemId": "%s", "quantity": 2}
+                    ]}
+                    """.formatted(ITEM_ID, ITEM_ID)))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.status").value(400))
+            .andExpect(jsonPath("$.message")
+                .value(org.hamcrest.Matchers.containsString("only once per order")));
+    }
+
+    @Test
+    void postOrders_distinctItemIds_stillSucceed() throws Exception {
+        // Seeds both SKUs here with explicit prices so the expected total is self-evident;
+        // the shared ITEM_ID from setUp is seeded without a price.
+        String first  = "widget-multi-a-" + java.util.UUID.randomUUID();
+        String second = "widget-multi-b-" + java.util.UUID.randomUUID();
+        for (String id : new String[] { first, second }) {
+            mockMvc.perform(post("/api/v1/inventory/seed")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""
+                        {"itemId": "%s", "quantity": 5, "unitPrice": 2.50}
+                        """.formatted(id)))
+                .andExpect(status().isCreated());
+        }
+
+        mockMvc.perform(post("/api/v1/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"customerId": "customer-multi", "items": [
+                       {"itemId": "%s", "quantity": 1},
+                       {"itemId": "%s", "quantity": 2}
+                    ]}
+                    """.formatted(first, second)))
+            .andExpect(status().isCreated())
+            // 1 x 2.50 + 2 x 2.50
+            .andExpect(jsonPath("$.totalAmount").value(7.50));
+    }
 }

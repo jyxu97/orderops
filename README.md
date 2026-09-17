@@ -785,6 +785,30 @@ is holding that stock. Reporting insufficient inventory would tell the client it
 while the order sits committed in DynamoDB. Covered by
 `sameKeyRetried_afterStockRanOut_returnsTheOriginalOrder`.
 
+**A reservation has three outcomes, not two**
+Reserving moves a unit from `available` to `reserved`; cancelling moves it back; **shipping
+retires it** (`reserved -= q, total -= q`). That third step was missing, so `reservedQuantity`
+accumulated every unit ever shipped — a counter meant to say "held for orders in flight"
+instead said "held plus everything already sold", and `totalQuantity` kept claiming stock that
+had left the warehouse.
+
+The settlement travels in the same transaction as the order's move to `FULFILLED`, which is
+what makes it safe under at-least-once delivery: a replayed message fails the order's own
+`status = :expectedStatus` condition and DynamoDB rolls the settlement back with it. Issued as
+its own call it would apply twice.
+
+**Every transition commits with its audit entry**
+The status update and its audit record go in one `TransactWriteItems`. Written separately, a
+process dying between them left a transition with no audit entry — and the operations failures
+view reads exactly that entry to explain why an order failed, so the gap appeared precisely
+when someone was diagnosing a failure.
+
+**A repeated SKU is a 400, not a 500**
+DynamoDB rejects a transaction containing two operations on the same item, so two lines for one
+SKU used to surface as an unhandled 500. There is no variant concept that would make a repeated
+SKU meaningful, so it is rejected up front with a message telling the client to combine the
+quantities.
+
 **State transitions are conditioned on the status, not the version**
 Each transition is a conditional update whose condition names the status the caller read
 (`status = :expectedStatus`), while the version increments server-side as a count of committed

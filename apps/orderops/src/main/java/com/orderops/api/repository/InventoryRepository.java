@@ -191,6 +191,40 @@ public class InventoryRepository {
             .build();
     }
 
+    /**
+     * Returns a TransactWriteItem that settles a reservation — the stock physically left the
+     * warehouse, so it stops being held and stops being owned.
+     *
+     * <p>This is the third and previously missing outcome of a reservation. Reserving moves a
+     * unit from available to reserved; cancelling moves it back; shipping has to retire it. With
+     * no settle step {@code reservedQuantity} accumulated every unit ever shipped, so a counter
+     * meant to say "held for orders in flight" instead said "held plus everything already
+     * sold", and {@code totalQuantity} kept claiming stock that had left the building.
+     *
+     * <p>{@code reservedQuantity >= :qty} keeps the counter from going negative, exactly as the
+     * release path does. Double settlement is prevented a level up: this only ever travels in
+     * the same transaction as the order's move to FULFILLED, whose own condition fails on a
+     * replay — so the settle is rolled back with it rather than applied twice.
+     */
+    public TransactWriteItem buildSettleTransactItem(String itemId, int quantity) {
+        return TransactWriteItem.builder()
+            .update(Update.builder()
+                .tableName(tableName)
+                .key(Map.of("itemId", AttributeValue.fromS(itemId)))
+                .updateExpression(
+                    "SET reservedQuantity = reservedQuantity - :qty, " +
+                    "    totalQuantity    = totalQuantity    - :qty, " +
+                    "    #ver             = #ver             + :one")
+                .conditionExpression("reservedQuantity >= :qty")
+                .expressionAttributeNames(Map.of("#ver", "version"))
+                .expressionAttributeValues(Map.of(
+                    ":qty", AttributeValue.fromN(String.valueOf(quantity)),
+                    ":one", AttributeValue.fromN("1")
+                ))
+                .build())
+            .build();
+    }
+
     private Inventory mapToInventory(Map<String, AttributeValue> item) {
         AttributeValue nameAttr  = item.get("itemName");
         AttributeValue priceAttr = item.get("unitPrice");

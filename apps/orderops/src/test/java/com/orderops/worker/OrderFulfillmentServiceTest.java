@@ -70,7 +70,7 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
         eventPublisher = Mockito.mock(OrderEventPublisher.class);
 
         fulfillmentService = new OrderFulfillmentService(
-            orderRepository, auditLogRepository,
+            orderRepository, auditLogRepository, inventoryRepository, dynamoDb,
             new OrderStateMachine(),
             paymentSimulator, shipmentSimulator,
             meterRegistry, eventPublisher);
@@ -249,7 +249,7 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
         Mockito.doReturn(Optional.of(staleRead)).when(stale).findById(staleRead.getOrderId());
 
         OrderFulfillmentService service = new OrderFulfillmentService(
-            stale, auditLogRepository, new OrderStateMachine(),
+            stale, auditLogRepository, inventoryRepository, dynamoDb, new OrderStateMachine(),
             paymentSimulator, shipmentSimulator, meterRegistry, eventPublisher);
 
         // Previously this surfaced as a version conflict the worker rethrew, burning a backoff
@@ -262,6 +262,65 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
         assertEquals(OrderStatus.CANCELLED, result.getStatus());
         assertEquals(1.0, meterRegistry.counter("fulfillment.skipped").count());
         assertEquals(0.0, meterRegistry.counter("fulfillment.transient_failure").count());
+    }
+
+
+    @Test
+    void fulfill_settlesTheReservationWhenTheOrderShips() {
+        Order order = seedOrder();   // seeded as total=100, available=99, reserved=1
+        String itemId = order.getItems().get(0).getItemId();
+
+        fulfillmentService.fulfill(order.getOrderId());
+
+        Inventory after = inventoryRepository.findById(itemId).orElseThrow();
+        // The unit shipped, so it is no longer held and no longer owned. Leaving reservedQuantity
+        // at 1 would conflate "held for an order in flight" with "already sold".
+        assertEquals(0, after.getReservedQuantity(), "reservation must be settled on shipment");
+        assertEquals(99, after.getTotalQuantity(), "shipped stock must leave totalQuantity");
+        assertEquals(99, after.getAvailableQuantity(), "available is untouched by settlement");
+        assertEquals(after.getTotalQuantity(), after.getAvailableQuantity() + after.getReservedQuantity());
+    }
+
+    @Test
+    void fulfill_replayAfterShipping_doesNotSettleTwice() {
+        Order order = seedOrder();
+        String itemId = order.getItems().get(0).getItemId();
+
+        fulfillmentService.fulfill(order.getOrderId());
+        // At-least-once delivery: the same message arrives again after the order shipped.
+        fulfillmentService.fulfill(order.getOrderId());
+
+        Inventory after = inventoryRepository.findById(itemId).orElseThrow();
+        assertEquals(0, after.getReservedQuantity());
+        assertEquals(99, after.getTotalQuantity(), "a replay must not retire the stock twice");
+    }
+
+    @Test
+    void fulfill_writesTheAuditEntryInTheSameTransactionAsTheStatus() {
+        Order order = seedOrder();
+
+        fulfillmentService.fulfill(order.getOrderId());
+
+        // Four transitions, four audit entries — the two can no longer diverge, because a
+        // process dying between them would roll the status change back too.
+        assertEquals(4, auditLogRepository.findByOrderId(order.getOrderId()).size());
+        assertEquals(OrderStatus.FULFILLED,
+            orderRepository.findById(order.getOrderId()).orElseThrow().getStatus());
+    }
+
+    @Test
+    void fulfill_failedOrder_doesNotSettleTheReservation() {
+        ReflectionTestUtils.setField(paymentSimulator, "failureMode", "PERMANENT");
+        Order order = seedOrder();
+        String itemId = order.getItems().get(0).getItemId();
+
+        fulfillmentService.fulfill(order.getOrderId());
+
+        // Nothing shipped, so the stock is still held — it is released by an operator
+        // cancelling, not retired by settlement.
+        Inventory after = inventoryRepository.findById(itemId).orElseThrow();
+        assertEquals(1, after.getReservedQuantity());
+        assertEquals(100, after.getTotalQuantity());
     }
 
     private Order seedOrder() {

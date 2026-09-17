@@ -88,7 +88,17 @@ public class OrderService {
         boolean hasIdempotencyKey = idempotencyKey != null && !idempotencyKey.isBlank();
         String requestHash = hasIdempotencyKey ? idempotencyService.computeRequestHash(request) : null;
 
-        // 2. Validate state transition
+        // 2. Reject a repeated SKU before building the transaction. DynamoDB rejects a
+        //    TransactWriteItems containing two operations on the same item, so two lines for
+        //    one SKU previously surfaced as a 500. There is no variant concept here, so a
+        //    repeat is a client mistake rather than something to silently merge.
+        Set<String> itemIds = requestedItemIds(request);
+        if (itemIds.size() != request.getItems().size()) {
+            throw new IllegalArgumentException(
+                "Each itemId may appear only once per order; combine the quantities instead");
+        }
+
+        // 3. Validate state transition
         stateMachine.validateTransition(OrderStatus.CREATED, OrderStatus.INVENTORY_RESERVED);
 
         // 3. Snapshot catalog prices and fail fast on an unknown SKU.
@@ -98,7 +108,7 @@ public class OrderService {
         //    the price the customer is being charged, so a later catalog change cannot rewrite
         //    the value of an existing order. A price edit racing this read is accepted: the
         //    customer pays the price that was current when the order was priced.
-        Map<String, Inventory> catalog = inventoryRepository.findAllById(requestedItemIds(request));
+        Map<String, Inventory> catalog = inventoryRepository.findAllById(itemIds);
         for (CreateOrderRequest.OrderItemDto item : request.getItems()) {
             if (!catalog.containsKey(item.getItemId())) {
                 throw new InventoryNotFoundException(item.getItemId());
