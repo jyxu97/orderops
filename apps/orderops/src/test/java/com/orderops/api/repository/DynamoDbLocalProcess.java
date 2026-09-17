@@ -15,6 +15,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.*;
+import java.time.Duration;
 import java.util.List;
 import java.util.zip.GZIPInputStream;
 
@@ -26,11 +27,13 @@ import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
  *
  * <p>Strategy (tried in order):
  * <ol>
- *   <li>Docker CLI — {@code docker run} with {@code amazon/dynamodb-local:2.3.0}. Used when the
- *       Docker daemon socket is reachable within 1 second.</li>
+ *   <li>Docker CLI — {@code docker run} with {@code amazon/dynamodb-local:2.3.0}. Preferred
+ *       whenever {@code docker info} succeeds, which includes CI runners; it needs no network
+ *       access beyond the image pull.</li>
  *   <li>Local JAR — downloads the DynamoDB Local tarball from the AWS CDN (cached in
- *       {@code /tmp/dynamodb-local-cache}) and starts it as a child {@code java} process. Used
- *       when Docker is not available (e.g., CI without Docker or Docker Desktop not running).</li>
+ *       {@code /tmp/dynamodb-local-cache}) and starts it as a child {@code java} process. Only
+ *       for machines with no usable Docker, because it makes the test phase depend on an
+ *       external CDN.</li>
  * </ol>
  *
  * <p>This avoids the Testcontainers docker-java library which is incompatible with Docker Desktop
@@ -43,6 +46,8 @@ public final class DynamoDbLocalProcess implements AutoCloseable {
     private static final String DYNAMO_LOCAL_URL =
         "https://d1ni2b6xgvw0s0.cloudfront.net/v2.x/dynamodb_local_latest.tar.gz";
     private static final Path CACHE_DIR = Path.of(System.getProperty("java.io.tmpdir"), "dynamodb-local-cache");
+    /** Attempts before giving up on the CDN. Transient handshake failures are the common case. */
+    private static final int DOWNLOAD_ATTEMPTS = 3;
 
     private final int port;
     /** Container ID (Docker mode) or {@code null} (JAR mode). */
@@ -80,25 +85,32 @@ public final class DynamoDbLocalProcess implements AutoCloseable {
     // Docker mode
     // -------------------------------------------------------------------------
 
+    /**
+     * Whether the Docker CLI can reach a working daemon.
+     *
+     * <p>Decided solely by {@code docker info}'s exit code. An earlier version first required
+     * a socket file at {@code ~/.docker/run/docker.sock} — the Docker Desktop path on macOS —
+     * and returned false when it was absent. On a Linux CI runner the socket lives at
+     * {@code /var/run/docker.sock}, so that guard rejected a perfectly good daemon and sent
+     * every run down the JAR-download fallback, which then depended on an external CDN being
+     * reachable during the test phase. Asking the CLI is both simpler and correct everywhere,
+     * including remote and rootless contexts where no local socket path exists at all.
+     */
     private static boolean isDockerAvailable() {
-        String sock = System.getProperty("DOCKER_HOST",
-            System.getenv("DOCKER_HOST") != null ? System.getenv("DOCKER_HOST") : "");
-        // Try the standard socket path used by Docker Desktop on macOS
-        String socketPath = sock.isEmpty()
-            ? System.getProperty("user.home") + "/.docker/run/docker.sock"
-            : sock.replace("unix://", "");
-        File f = new File(socketPath);
-        if (!f.exists()) return false;
-        // Quick TCP-style availability check by connecting to the Unix domain socket
         try {
             Process p = new ProcessBuilder("docker", "info", "--format", "{{.ID}}")
                 .redirectErrorStream(true)
                 .start();
-            // Give Docker 2 seconds to respond
-            boolean finished = p.waitFor(2, java.util.concurrent.TimeUnit.SECONDS);
-            if (!finished) { p.destroyForcibly(); return false; }
+            // A cold daemon can take a few seconds to answer; 2s was tight enough to be its
+            // own source of false negatives.
+            boolean finished = p.waitFor(10, java.util.concurrent.TimeUnit.SECONDS);
+            if (!finished) {
+                p.destroyForcibly();
+                return false;
+            }
             return p.exitValue() == 0;
         } catch (Exception e) {
+            // No docker binary on PATH, or it could not be executed.
             return false;
         }
     }
@@ -159,31 +171,104 @@ public final class DynamoDbLocalProcess implements AutoCloseable {
     /**
      * Ensures the DynamoDB Local JAR and native libs are present in {@link #CACHE_DIR}.
      * Downloads and extracts the tarball on first call.
+     *
+     * <p>This is the fallback for machines with no Docker, and it reaches out to an external
+     * CDN during the test phase — so it is written to survive that CDN misbehaving. Three
+     * things matter:
+     *
+     * <ul>
+     *   <li><b>Serialized.</b> Six test classes start their own instance from a static
+     *       initializer. Without the lock, two of them can both see an empty cache and
+     *       download concurrently, which is how a real CI run ended up with one of the two
+     *       handshakes terminated by the CDN.</li>
+     *   <li><b>Staged.</b> The tarball is fetched to a temporary file and expanded into a
+     *       temporary directory, then moved into place. A half-extracted cache directory can
+     *       never be mistaken for a usable one by a later call.</li>
+     *   <li><b>Retried.</b> A terminated handshake or a truncated body is transient, and
+     *       failing the whole suite over it wastes a run.</li>
+     * </ul>
      */
-    private static Path ensureDynamoDbLocalJar() throws IOException, InterruptedException {
+    private static synchronized Path ensureDynamoDbLocalJar() throws IOException, InterruptedException {
         Path jar = CACHE_DIR.resolve("DynamoDBLocal.jar");
         if (Files.exists(jar)) {
             log.info("Using cached DynamoDB Local at {}", CACHE_DIR);
             return CACHE_DIR;
         }
 
-        log.info("Downloading DynamoDB Local from {} ...", DYNAMO_LOCAL_URL);
-        Files.createDirectories(CACHE_DIR);
+        IOException lastFailure = null;
+        for (int attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
+            Path staging = Files.createTempDirectory("dynamodb-local-staging");
+            try {
+                log.info("Downloading DynamoDB Local from {} (attempt {}/{}) ...",
+                    DYNAMO_LOCAL_URL, attempt, DOWNLOAD_ATTEMPTS);
 
-        HttpClient http = HttpClient.newBuilder()
-            .followRedirects(java.net.http.HttpClient.Redirect.ALWAYS)
-            .build();
-        HttpRequest req = HttpRequest.newBuilder()
-            .uri(URI.create(DYNAMO_LOCAL_URL))
-            .GET().build();
-        Path tarball = CACHE_DIR.resolve("dynamodb_local_latest.tar.gz");
-        http.send(req, HttpResponse.BodyHandlers.ofFile(tarball));
-        log.info("Download complete, extracting to {}", CACHE_DIR);
+                HttpClient http = HttpClient.newBuilder()
+                    .followRedirects(java.net.http.HttpClient.Redirect.ALWAYS)
+                    .connectTimeout(Duration.ofSeconds(20))
+                    .build();
+                HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(DYNAMO_LOCAL_URL))
+                    .timeout(Duration.ofMinutes(3))
+                    .GET().build();
 
-        extractTarGz(tarball, CACHE_DIR);
-        Files.deleteIfExists(tarball);
-        log.info("DynamoDB Local ready at {}", CACHE_DIR);
-        return CACHE_DIR;
+                Path tarball = staging.resolve("dynamodb_local_latest.tar.gz");
+                HttpResponse<Path> response = http.send(req, HttpResponse.BodyHandlers.ofFile(tarball));
+                if (response.statusCode() != 200) {
+                    throw new IOException("CDN returned HTTP " + response.statusCode());
+                }
+
+                Path expanded = staging.resolve("expanded");
+                Files.createDirectories(expanded);
+                extractTarGz(tarball, expanded);
+                if (!Files.exists(expanded.resolve("DynamoDBLocal.jar"))) {
+                    throw new IOException("archive did not contain DynamoDBLocal.jar");
+                }
+
+                // Publish only once the contents are known good. ATOMIC_MOVE is best-effort:
+                // it fails across filesystems, so fall back to a plain move.
+                Files.createDirectories(CACHE_DIR.getParent());
+                try {
+                    Files.move(expanded, CACHE_DIR, StandardCopyOption.ATOMIC_MOVE);
+                } catch (IOException atomicUnsupported) {
+                    Files.move(expanded, CACHE_DIR, StandardCopyOption.REPLACE_EXISTING);
+                }
+
+                log.info("DynamoDB Local ready at {}", CACHE_DIR);
+                return CACHE_DIR;
+
+            } catch (IOException e) {
+                lastFailure = e;
+                log.warn("DynamoDB Local download failed (attempt {}/{}): {}",
+                    attempt, DOWNLOAD_ATTEMPTS, e.toString());
+                if (attempt < DOWNLOAD_ATTEMPTS) {
+                    Thread.sleep(2000L * attempt);
+                }
+            } finally {
+                deleteRecursively(staging);
+            }
+        }
+
+        throw new IOException(
+            "Could not obtain DynamoDB Local after " + DOWNLOAD_ATTEMPTS + " attempt(s). "
+                + "Start Docker to avoid the download entirely.", lastFailure);
+    }
+
+    /** Best-effort cleanup of a staging directory; failure to tidy up must not fail a test. */
+    private static void deleteRecursively(Path root) {
+        if (root == null || !Files.exists(root)) {
+            return;
+        }
+        try (var paths = Files.walk(root)) {
+            paths.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
+                try {
+                    Files.deleteIfExists(p);
+                } catch (IOException ignored) {
+                    // nothing useful to do
+                }
+            });
+        } catch (IOException ignored) {
+            // nothing useful to do
+        }
     }
 
     private static void extractTarGz(Path tarball, Path destDir) throws IOException {
