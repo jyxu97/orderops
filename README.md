@@ -546,16 +546,19 @@ methodology and the failed attempt to separate harness cost from server cost are
 100 units of stock, 1000 simultaneous checkout attempts:
 
 ```
-checkout_success   100      PASS
-checkout_rejected  900      PASS
-http_req_failed    0.00%    PASS
-
-final inventory:   availableQuantity=0  reservedQuantity=100  version=100
+checkout_success           100     PASS      final_available_quantity   0      PASS
+checkout_rejected          900     PASS      final_reserved_quantity    100    PASS
+http_req_failed            0.00%   PASS      final_inventory_version    +100   PASS
 ```
 
-`version=100` is the assertion that matters. The version counter increments once per successful
-conditional write, so landing on exactly 100 proves exactly 100 reservations committed against
-100 units — no oversell, and no lost update.
+`final_inventory_version` is the assertion that matters. The version counter increments once per
+successful conditional write, so landing on exactly +100 proves exactly 100 reservations
+committed against 100 units — no oversell, and no lost update.
+
+The response counts alone would not show that: they prove the API replied the right number of
+times, and a lost update can produce a correct count of 201s next to a wrong final quantity. So
+the test reads the contended record back in `teardown()` and records the end state as metrics,
+because a failed `check()` does not fail a k6 run while a breached threshold does.
 
 ```bash
 make load-test

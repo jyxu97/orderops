@@ -95,16 +95,28 @@ The p50 figures are stable across repeats; the p95/p99 figures at 500 and 1000 c
 100 units of stock, 1000 simultaneous checkout attempts of 1 unit each.
 
 ```
-checkout_success   100      (threshold: count == 100)   PASS
-checkout_rejected  900      (threshold: count == 900)   PASS
-http_req_failed    0.00%    (threshold: rate == 0)      PASS
-
-final inventory:   availableQuantity=0  reservedQuantity=100  version=100
+checkout_success           100      (threshold: count == 100)    PASS
+checkout_rejected          900      (threshold: count == 900)    PASS
+http_req_failed            0.00%    (threshold: rate == 0)       PASS
+final_available_quantity   0        (threshold: value == 0)      PASS
+final_reserved_quantity    100      (threshold: value == 100)    PASS
+final_inventory_version    +100     (threshold: value == 100)    PASS
 ```
 
-`version=100` is the load-bearing assertion: the item's version counter increments once per
-successful conditional write, so it having landed on exactly 100 means exactly 100 reservations
+`final_inventory_version` is the load-bearing assertion: the item's version counter increments
+once per successful conditional write, so landing on exactly +100 means exactly 100 reservations
 committed against 100 units — no oversell, and no lost update either.
+
+The response-count thresholds alone would not establish that. They prove the API *replied* the
+right number of times; a lost update — two writes reading the same stale value, each
+decrementing, one overwriting the other — can produce a correct count of 201s alongside a wrong
+final quantity. The end state is read back in the test's `teardown()` and recorded as metrics
+rather than checked with `check()`, because a failed check does not fail a k6 run while a
+breached threshold does.
+
+`setup()` also refuses to start unless the item is seeded to exactly the stock the run asserts
+against. Without that guard a second run against already-exhausted stock produces 0 successes
+and 1000 rejections, which looks like a catastrophic failure rather than operator error.
 
 Latency is deliberately *not* claimed from this run. Its threshold is a liveness bound, because
 at 1000 simultaneous VUs against one local process the distribution is a property of the load
