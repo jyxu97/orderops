@@ -22,6 +22,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -182,7 +183,7 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
         Order order = seedOrder();
         // A customer cancelling while the fulfillment message is still in flight has already
         // released the reservation; fulfilling anyway would ship stock the catalog took back.
-        orderRepository.updateStatus(order.getOrderId(), OrderStatus.CANCELLED, order.getVersion());
+        orderRepository.advanceStatus(order.getOrderId(), order.getStatus(), OrderStatus.CANCELLED);
 
         fulfillmentService.fulfill(order.getOrderId());
 
@@ -226,11 +227,41 @@ class OrderFulfillmentServiceTest extends DynamoDbTestBase {
     @Test
     void fulfill_skippedOrder_publishesNothing() {
         Order order = seedOrder();
-        orderRepository.updateStatus(order.getOrderId(), OrderStatus.CANCELLED, order.getVersion());
+        orderRepository.advanceStatus(order.getOrderId(), order.getStatus(), OrderStatus.CANCELLED);
 
         fulfillmentService.fulfill(order.getOrderId());
 
         Mockito.verifyNoInteractions(eventPublisher);
+    }
+
+
+    @Test
+    void fulfill_orderCancelledMidFlight_acknowledgesInsteadOfRetrying() {
+        // The realistic race: cancel is only legal from INVENTORY_RESERVED, so it has to land
+        // between the worker's read and the worker's first write. That is modelled by letting
+        // the cancel commit for real while the repository hands the worker the order as it
+        // looked beforehand.
+        Order staleRead = seedOrder();
+        orderRepository.advanceStatus(staleRead.getOrderId(), OrderStatus.INVENTORY_RESERVED,
+            OrderStatus.CANCELLED);
+
+        OrderRepository stale = Mockito.spy(orderRepository);
+        Mockito.doReturn(Optional.of(staleRead)).when(stale).findById(staleRead.getOrderId());
+
+        OrderFulfillmentService service = new OrderFulfillmentService(
+            stale, auditLogRepository, new OrderStateMachine(),
+            paymentSimulator, shipmentSimulator, meterRegistry, eventPublisher);
+
+        // Previously this surfaced as a version conflict the worker rethrew, burning a backoff
+        // interval and a receive count before the redelivery reached the terminal-state check
+        // and skipped anyway.
+        assertDoesNotThrow(() -> service.fulfill(staleRead.getOrderId()),
+            "a mid-flight cancel must not be re-thrown for redelivery");
+
+        Order result = orderRepository.findById(staleRead.getOrderId()).orElseThrow();
+        assertEquals(OrderStatus.CANCELLED, result.getStatus());
+        assertEquals(1.0, meterRegistry.counter("fulfillment.skipped").count());
+        assertEquals(0.0, meterRegistry.counter("fulfillment.transient_failure").count());
     }
 
     private Order seedOrder() {

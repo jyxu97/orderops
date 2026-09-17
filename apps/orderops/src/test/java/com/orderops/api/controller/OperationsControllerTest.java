@@ -134,9 +134,9 @@ class OperationsControllerTest {
     /** Walks an order into NEEDS_MANUAL_REVIEW the way a failed fulfillment would. */
     private String createFailedOrder() throws Exception {
         String orderId = createOrder();
-        advance(orderId, OrderStatus.PAYMENT_PROCESSING, 1L, "Processing payment");
-        advance(orderId, OrderStatus.FAILED, 2L, "Payment declined");
-        advance(orderId, OrderStatus.NEEDS_MANUAL_REVIEW, 3L, "Queued for manual review");
+        advance(orderId, OrderStatus.INVENTORY_RESERVED, OrderStatus.PAYMENT_PROCESSING, "Processing payment");
+        advance(orderId, OrderStatus.PAYMENT_PROCESSING, OrderStatus.FAILED, "Payment declined");
+        advance(orderId, OrderStatus.FAILED, OrderStatus.NEEDS_MANUAL_REVIEW, "Queued for manual review");
         return orderId;
     }
 
@@ -144,8 +144,8 @@ class OperationsControllerTest {
      * Applies a transition and records it, the way the worker does — the audit entry matters
      * because the failures view reads its reason back.
      */
-    private void advance(String orderId, OrderStatus status, long expectedVersion, String reason) {
-        orderRepository.updateStatus(orderId, status, expectedVersion);
+    private void advance(String orderId, OrderStatus from, OrderStatus status, String reason) {
+        orderRepository.advanceStatus(orderId, from, status);
         auditLogRepository.save(OrderAuditLog.builder()
             .orderId(orderId)
             .timestamp(Instant.now().toString())
@@ -257,9 +257,9 @@ class OperationsControllerTest {
         // cause, then routes it to manual review. The newest audit entry is that routing step,
         // so showing it would tell an operator nothing about why the order failed.
         String orderId = createOrder();
-        advance(orderId, OrderStatus.PAYMENT_PROCESSING, 1L, "Processing payment");
-        advance(orderId, OrderStatus.FAILED, 2L, "Payment declined");
-        advance(orderId, OrderStatus.NEEDS_MANUAL_REVIEW, 3L, "Queued for manual review");
+        advance(orderId, OrderStatus.INVENTORY_RESERVED, OrderStatus.PAYMENT_PROCESSING, "Processing payment");
+        advance(orderId, OrderStatus.PAYMENT_PROCESSING, OrderStatus.FAILED, "Payment declined");
+        advance(orderId, OrderStatus.FAILED, OrderStatus.NEEDS_MANUAL_REVIEW, "Queued for manual review");
 
         mockMvc.perform(get("/api/v1/ops/failures").param("limit", "50"))
             .andExpect(status().isOk())
@@ -270,8 +270,8 @@ class OperationsControllerTest {
     @Test
     void failures_orderWithNoFailedTransition_fallsBackToTheLatestEntry() throws Exception {
         String orderId = createOrder();
-        advance(orderId, OrderStatus.PAYMENT_PROCESSING, 1L, "Processing payment");
-        advance(orderId, OrderStatus.FAILED, 2L, null);
+        advance(orderId, OrderStatus.INVENTORY_RESERVED, OrderStatus.PAYMENT_PROCESSING, "Processing payment");
+        advance(orderId, OrderStatus.PAYMENT_PROCESSING, OrderStatus.FAILED, null);
 
         mockMvc.perform(get("/api/v1/ops/failures").param("limit", "50"))
             .andExpect(status().isOk())

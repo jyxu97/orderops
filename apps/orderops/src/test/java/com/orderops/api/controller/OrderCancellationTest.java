@@ -161,7 +161,7 @@ class OrderCancellationTest {
         String orderId = createOrder(2);
 
         // Simulate the worker having picked the order up.
-        advanceStatus(orderId, OrderStatus.PAYMENT_PROCESSING, 1L);
+        advanceStatus(orderId, OrderStatus.INVENTORY_RESERVED, OrderStatus.PAYMENT_PROCESSING);
 
         mockMvc.perform(post("/api/v1/orders/" + orderId + "/cancel"))
             .andExpect(status().isConflict())
@@ -178,9 +178,9 @@ class OrderCancellationTest {
     @Test
     void cancel_orderInManualReview_isAllowedAsOperatorResolution() throws Exception {
         String orderId = createOrder(2);
-        advanceStatus(orderId, OrderStatus.PAYMENT_PROCESSING, 1L);
-        advanceStatus(orderId, OrderStatus.FAILED, 2L);
-        advanceStatus(orderId, OrderStatus.NEEDS_MANUAL_REVIEW, 3L);
+        advanceStatus(orderId, OrderStatus.INVENTORY_RESERVED, OrderStatus.PAYMENT_PROCESSING);
+        advanceStatus(orderId, OrderStatus.PAYMENT_PROCESSING, OrderStatus.FAILED);
+        advanceStatus(orderId, OrderStatus.FAILED, OrderStatus.NEEDS_MANUAL_REVIEW);
 
         mockMvc.perform(post("/api/v1/orders/" + orderId + "/cancel"))
             .andExpect(status().isOk())
@@ -221,8 +221,8 @@ class OrderCancellationTest {
     }
 
     /** Moves an order forward the way the fulfillment worker would. */
-    private void advanceStatus(String orderId, OrderStatus status, long expectedVersion) {
-        orderRepository.updateStatus(orderId, status, expectedVersion);
+    private void advanceStatus(String orderId, OrderStatus from, OrderStatus status) {
+        orderRepository.advanceStatus(orderId, from, status);
     }
 
     @Autowired

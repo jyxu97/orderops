@@ -785,6 +785,23 @@ is holding that stock. Reporting insufficient inventory would tell the client it
 while the order sits committed in DynamoDB. Covered by
 `sameKeyRetried_afterStockRanOut_returnsTheOriginalOrder`.
 
+**State transitions are conditioned on the status, not the version**
+Each transition is a conditional update whose condition names the status the caller read
+(`status = :expectedStatus`), while the version increments server-side as a count of committed
+writes. The version would be the stricter condition — it rejects *any* intervening write — but
+strictness is the wrong goal: the invariant is "the order is still at the step this transition
+applies to", and a write touching some unrelated attribute does not violate it. Conditioning on
+version made such a write fail the transition, which the worker then treated as a transient
+fault and redelivered after a backoff for nothing. Status conditioning is also ABA-safe here,
+because the state machine never returns to a status it has left.
+
+The update asks for `ReturnValuesOnConditionCheckFailure=ALL_OLD`, so a rejected write reports
+*what the order actually became* rather than just "something changed". The worker uses that: if
+the order reached a terminal state while the attempt was in flight — a customer cancelling is
+the usual cause — the message is acknowledged instead of retried, since redelivering it would
+only reach the terminal-state check and skip after burning a backoff interval and a receive
+count. Any other status is genuinely unexpected and still fails into the retry path.
+
 **Resume-aware fulfillment worker**
 If a transient failure leaves an order in `PAYMENT_PROCESSING`, the next SQS redelivery
 resumes from that state instead of restarting, preventing double-charging.

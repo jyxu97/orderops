@@ -1,5 +1,6 @@
 package com.orderops.api.repository;
 
+import com.orderops.shared.exception.OrderStatusConflictException;
 import com.orderops.shared.model.Order;
 import com.orderops.shared.model.Page;
 import com.orderops.shared.state.OrderStatus;
@@ -117,28 +118,55 @@ public class OrderRepository {
     public record StatusCount(int count, boolean capped) {}
 
     /**
-     * Conditionally updates order status and increments version.
-     * Uses optimistic locking: fails if {@code expectedVersion} doesn't match.
+     * Advances an order to {@code newStatus}, but only while it is still in
+     * {@code expectedStatus}.
+     *
+     * <p>The condition names the status rather than the version on purpose. The version is the
+     * stricter test — it rejects any intervening write at all — but strictness is the wrong
+     * goal here: this operation's invariant is "the order is still at the step this transition
+     * applies to", and a write that touched some unrelated attribute does not violate it. With
+     * a version condition such a write would fail the transition, the worker would treat it as
+     * a transient fault, and the message would be redelivered after a backoff for no reason.
+     * Status conditioning is also immune to ABA here because the state machine never returns to
+     * a status it has left.
+     *
+     * <p>The version still increments, computed server-side as {@code version + 1} rather than
+     * from a value the caller read. That keeps it an exact count of committed writes — which is
+     * what the concurrent-checkout benchmark asserts against to rule out lost updates — and the
+     * count stays right even when writes the caller never saw have landed in between.
+     *
+     * @throws OrderStatusConflictException if the order has moved on, carrying the status found
      */
-    public void updateStatus(String orderId, OrderStatus newStatus, long expectedVersion) {
+    public void advanceStatus(String orderId, OrderStatus expectedStatus, OrderStatus newStatus) {
         try {
             dynamoDb.updateItem(UpdateItemRequest.builder()
                 .tableName(tableName)
                 .key(Map.of("orderId", AttributeValue.fromS(orderId)))
-                .updateExpression("SET #st = :status, #ver = :newVer, updatedAt = :now")
-                .conditionExpression("#ver = :expectedVer")
+                .updateExpression("SET #st = :newStatus, updatedAt = :now ADD #ver :one")
+                .conditionExpression("#st = :expectedStatus")
                 .expressionAttributeNames(Map.of("#st", "status", "#ver", "version"))
                 .expressionAttributeValues(Map.of(
-                    ":status",      AttributeValue.fromS(newStatus.name()),
-                    ":newVer",      AttributeValue.fromN(String.valueOf(expectedVersion + 1)),
-                    ":expectedVer", AttributeValue.fromN(String.valueOf(expectedVersion)),
-                    ":now",         AttributeValue.fromS(Instant.now().toString())
+                    ":newStatus",      AttributeValue.fromS(newStatus.name()),
+                    ":expectedStatus", AttributeValue.fromS(expectedStatus.name()),
+                    ":one",            AttributeValue.fromN("1"),
+                    ":now",            AttributeValue.fromS(Instant.now().toString())
                 ))
+                // Ask DynamoDB to hand back the item it rejected the write against. Without it
+                // a conflict only says "something changed"; with it the caller can act on what
+                // the order actually became.
+                .returnValuesOnConditionCheckFailure(ReturnValuesOnConditionCheckFailure.ALL_OLD)
                 .build());
         } catch (ConditionalCheckFailedException e) {
-            throw new RuntimeException(
-                "Version conflict updating order " + orderId + " to " + newStatus, e);
+            throw new OrderStatusConflictException(orderId, expectedStatus, statusOf(e));
         }
+    }
+
+    /** Reads the status out of a rejected write's returned item, or null if none came back. */
+    private static OrderStatus statusOf(ConditionalCheckFailedException e) {
+        if (!e.hasItem() || e.item().get("status") == null) {
+            return null;
+        }
+        return OrderStatus.valueOf(e.item().get("status").s());
     }
 
     // Used by TransactWriteItems — returns the Put object for embedding in a transaction.

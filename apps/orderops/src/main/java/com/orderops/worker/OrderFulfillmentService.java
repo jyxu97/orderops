@@ -3,6 +3,7 @@ package com.orderops.worker;
 import com.orderops.api.repository.AuditLogRepository;
 import com.orderops.api.repository.OrderRepository;
 import com.orderops.realtime.OrderEventPublisher;
+import com.orderops.shared.exception.OrderStatusConflictException;
 import com.orderops.shared.event.OrderStatusEvent;
 import com.orderops.shared.model.Order;
 import com.orderops.shared.model.OrderAuditLog;
@@ -92,6 +93,24 @@ public class OrderFulfillmentService {
             log.info("Order {} fulfilled successfully", orderId);
             meterRegistry.counter("fulfillment.fulfilled").increment();
 
+        } catch (OrderStatusConflictException e) {
+            // Another writer advanced this order while the attempt was in flight — in practice
+            // a customer cancelling, or a concurrent duplicate delivery. If it landed somewhere
+            // terminal there is nothing left to do, so the message is acknowledged rather than
+            // retried: redelivering it would only reach the terminal-state check at the top of
+            // this method and skip, after burning a backoff interval and a receive count.
+            if (isTerminal(e.getActualStatus())) {
+                log.info("Order {} reached {} while this attempt was in flight, nothing to do",
+                    orderId, e.getActualStatus());
+                meterRegistry.counter("fulfillment.skipped").increment();
+                return;
+            }
+            // Anywhere else is unexpected: only cancel and this worker write an order's status.
+            log.error("Fulfillment of order {} lost a race to an unexpected status {}",
+                orderId, e.getActualStatus());
+            meterRegistry.counter("fulfillment.transient_failure").increment();
+            throw e;
+
         } catch (RuntimeException e) {
             log.error("Fulfillment failed for orderId={}: {}", orderId, e.getMessage());
             meterRegistry.counter("fulfillment.transient_failure").increment();
@@ -108,6 +127,9 @@ public class OrderFulfillmentService {
      * has taken back.
      */
     private boolean isTerminal(OrderStatus status) {
+        if (status == null) {
+            return false;   // order not found — not a terminal state, let it surface
+        }
         return status == OrderStatus.FULFILLED
             || status == OrderStatus.NEEDS_MANUAL_REVIEW
             || status == OrderStatus.CANCELLED;
@@ -119,7 +141,7 @@ public class OrderFulfillmentService {
      */
     private Order applyTransition(Order order, OrderStatus newStatus, String reason) {
         stateMachine.validateTransition(order.getStatus(), newStatus);
-        orderRepository.updateStatus(order.getOrderId(), newStatus, order.getVersion());
+        orderRepository.advanceStatus(order.getOrderId(), order.getStatus(), newStatus);
 
         String now = Instant.now().toString();
         auditLogRepository.save(OrderAuditLog.builder()
