@@ -87,6 +87,17 @@ event fans out to all of them.
 
 Every connection was established at every level and none dropped, at all four levels.
 
+These are assertions, not observations. The harness exits non-zero when p95 exceeds its budget
+(`--maxP95`, default 100 ms), when a connection fails to open, or when one drops mid-run — so a
+regression fails the run instead of needing someone to read the output. The connection checks
+matter for the same reason the latency one does: a dropped connection shrinks the population the
+percentiles are computed over, so a degraded run could otherwise report a *better* p95 than a
+healthy one.
+
+The budget is a bound rather than a point value because repeat runs at 1000 connections have
+produced p95 anywhere from 21 to 51 ms on this host. Asserting a tighter figure would fail on
+ordinary variance rather than on a real regression.
+
 The p50 figures are stable across repeats; the p95/p99 figures at 500 and 1000 clients are not
 — see the variance note above. Across every 1000-client run observed, p95 stayed under 60 ms.
 

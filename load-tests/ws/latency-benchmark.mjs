@@ -16,6 +16,10 @@
  * Usage:
  *   node latency-benchmark.mjs --clients 500 --orders 40 [--items 2] [--warmup 5]
  *                              [--api http://localhost:8080] [--out ../results]
+ *                              [--maxP95 100]
+ *
+ * Exits non-zero when p95 exceeds the budget, when a connection fails to open, or when one
+ * drops mid-run — so a regression fails a run rather than needing someone to read the output.
  */
 import { writeFileSync } from 'node:fs';
 import { StompClient } from './stomp.mjs';
@@ -32,6 +36,10 @@ function args() {
     origin: 'http://localhost:5173',
     out: null,
     label: null,
+    // p95 budget in milliseconds. A bound rather than a point value on purpose: repeat runs at
+    // 1000 connections have produced 26-51 ms on the same host, so asserting a tighter figure
+    // would fail on ordinary variance rather than on a real regression.
+    maxP95: 100,
     // Listen without driving any orders. Lets several harness processes share one connection
     // pool so client-side event-loop queuing can be separated from server-side fan-out cost.
     listenSeconds: 0,
@@ -41,7 +49,7 @@ function args() {
     const key = argv[i]?.replace(/^--/, '');
     const value = argv[i + 1];
     if (key && value !== undefined && key in parsed) {
-      parsed[key] = ['clients', 'orders', 'items', 'warmup', 'listenSeconds'].includes(key)
+      parsed[key] = ['clients', 'orders', 'items', 'warmup', 'listenSeconds', 'maxP95'].includes(key)
         ? Number(value)
         : value;
     }
@@ -304,8 +312,38 @@ async function main() {
   }
 
   clients.forEach((client) => client.close());
-  // Non-zero exit if nothing was measured, so a broken run cannot be mistaken for a good one.
-  process.exit(samples.length > 0 ? 0 : 1);
+
+  // Thresholds, evaluated here rather than left to whoever reads the output. Without them this
+  // is a measuring instrument: p95 could regress to half a second and the run would still exit
+  // 0. The concurrent-checkout test already asserts its own headline number, and the same
+  // standard belongs on this one.
+  const failures = [];
+
+  if (summary.latencyMs.p95 === null) {
+    failures.push('no latency samples were collected');
+  } else if (summary.latencyMs.p95 > OPTS.maxP95) {
+    failures.push(`p95 ${summary.latencyMs.p95} ms exceeds the ${OPTS.maxP95} ms budget`);
+  }
+
+  // A connection that never opened, or one that dropped mid-run, silently shrinks the
+  // population the percentiles are computed over — so a degraded run could otherwise report a
+  // *better* p95 than a healthy one.
+  if (clients.length < OPTS.clients) {
+    failures.push(`only ${clients.length} of ${OPTS.clients} connections were established`);
+  }
+  if (unexpectedCloses > 0) {
+    failures.push(`${unexpectedCloses} connection(s) dropped during the run`);
+  }
+
+  if (failures.length > 0) {
+    console.log('');
+    failures.forEach((f) => console.error(`  FAIL  ${f}`));
+    process.exit(1);
+  }
+
+  console.log(`\n  PASS  p95 ${summary.latencyMs.p95} ms within the ${OPTS.maxP95} ms budget, ` +
+    `${clients.length} connection(s) held`);
+  process.exit(0);
 }
 
 main().catch((error) => {

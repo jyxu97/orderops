@@ -1,6 +1,6 @@
 {
   "label": "250-clients",
-  "recordedAt": "2026-09-03T22:24:04.740Z",
+  "recordedAt": "2026-09-20T00:15:53.132Z",
   "config": {
     "clients": 250,
     "orders": 20,
@@ -19,19 +19,19 @@
   "delivery": {
     "eventsReceived": 25000,
     "malformed": 0,
-    "durationMs": 7854,
-    "eventsPerSecond": 3183.1
+    "durationMs": 7574,
+    "eventsPerSecond": 3300.8
   },
   "latencyMs": {
     "count": 25000,
-    "min": 1,
+    "min": 0,
     "p50": 4,
     "p95": 14,
-    "p99": 30,
-    "max": 35,
-    "mean": 5.21
+    "p99": 24,
+    "max": 30,
+    "mean": 4.85
   },
   "server": {
-    "jvmMemoryUsedMb": 163.7
+    "jvmMemoryUsedMb": 202.8
   }
 }

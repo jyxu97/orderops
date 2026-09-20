@@ -528,6 +528,11 @@ make ws-latency-suite    # the whole ladder
 make ws-latency-test CLIENTS=500
 ```
 
+The run asserts its own result: p95 over budget (`--maxP95`, default 100 ms), a connection that
+fails to open, or one that drops mid-run all exit non-zero. The connection checks earn their
+place — a dropped connection shrinks the population the percentiles cover, so a degraded run
+could otherwise report a *better* p95 than a healthy one.
+
 **Read the high-count figures as a range.** Three runs of the identical 1000-client
 configuration gave p95 of 40 ms, 26 ms and 51 ms — the harness holds all 1000 connections in one
 Node process and competes for cores with the very JVMs it is measuring, so this is the whole
