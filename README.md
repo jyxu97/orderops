@@ -790,6 +790,33 @@ is holding that stock. Reporting insufficient inventory would tell the client it
 while the order sits committed in DynamoDB. Covered by
 `sameKeyRetried_afterStockRanOut_returnsTheOriginalOrder`.
 
+**Transactional outbox for the fulfillment message**
+The order's transaction also writes an outbox record — the obligation to enqueue it. Checkout
+then sends to SQS inline and deletes the record, so the normal path's latency is unchanged and
+the record is what makes the send recoverable instead of best-effort. `OutboxPublisher` sweeps
+whatever is left.
+
+Without it, the send was a separate call after the transaction and an unhandled failure there
+returned 500 with the order already committed and holding stock. The idempotency layer then made
+it worse rather than better: the client's retry hit the `attribute_not_exists(idempotencyKey)`
+condition, returned the original order with 200 and `replayed: true`, and returned from inside
+the catch block — never reaching the enqueue. The client saw success while the order sat in
+`INVENTORY_RESERVED` forever with nothing to move it.
+
+A simpler status sweep ("re-enqueue orders stuck in `INVENTORY_RESERVED`") was considered and
+rejected. Order status cannot distinguish *never enqueued* from *enqueued, worker is behind*, so
+during a worker outage every backlogged order looks stale and the sweep would re-enqueue all of
+them — doubling the queue at the worst possible moment. An outbox record is deleted the instant
+SQS accepts the message, so a backlogged-but-sent order is invisible to the sweep no matter how
+long the worker takes.
+
+Delivery is at-least-once: a crash between the send and the delete resends. That is safe because
+the worker skips terminal orders and every transition is conditioned on the status it read.
+
+The table needs no index or status flag — a confirmed send deletes the row, so the table *is* the
+set of outstanding sends and is empty in a healthy system. If the scan ever has enough rows to
+cost anything, that is itself the signal that sends are failing.
+
 **A reservation has three outcomes, not two**
 Reserving moves a unit from `available` to `reserved`; cancelling moves it back; **shipping
 retires it** (`reserved -= q, total -= q`). That third step was missing, so `reservedQuantity`

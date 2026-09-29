@@ -65,6 +65,20 @@ aws dynamodb create-table \
   --billing-mode PAY_PER_REQUEST \
   --no-cli-pager 2>/dev/null || echo "IdempotencyRecords table already exists"
 
+# Fulfillment messages that a committed order still owes. Written inside the order's
+# transaction and deleted once SQS accepts the message, so this table is empty in a healthy
+# system — which is why it needs no index.
+aws dynamodb create-table \
+  --endpoint-url "$ENDPOINT" \
+  --region "$REGION" \
+  --table-name OrderOutbox \
+  --attribute-definitions \
+    AttributeName=orderId,AttributeType=S \
+  --key-schema \
+    AttributeName=orderId,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --no-cli-pager 2>/dev/null || echo "OrderOutbox table already exists"
+
 aws dynamodb create-table \
   --endpoint-url "$ENDPOINT" \
   --region "$REGION" \

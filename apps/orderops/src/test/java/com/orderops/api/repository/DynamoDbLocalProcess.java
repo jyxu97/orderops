@@ -377,6 +377,10 @@ public final class DynamoDbLocalProcess implements AutoCloseable {
             List.of(attr("idempotencyKey", ScalarAttributeType.S)),
             List.of(key("idempotencyKey", KeyType.HASH)));
 
+        createTable(client, "OrderOutbox",
+            List.of(attr("orderId", ScalarAttributeType.S)),
+            List.of(key("orderId", KeyType.HASH)));
+
         createTable(client, "OrderAuditLogs",
             List.of(attr("orderId", ScalarAttributeType.S), attr("timestamp", ScalarAttributeType.S)),
             List.of(key("orderId", KeyType.HASH), key("timestamp", KeyType.RANGE)));

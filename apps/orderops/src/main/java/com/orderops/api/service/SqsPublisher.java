@@ -17,12 +17,22 @@ public class SqsPublisher {
     @Value("${sqs.fulfillment-queue-url}")
     private String fulfillmentQueueUrl;
 
-    public void publishOrderCreated(String orderId) {
-        String body = "{\"orderId\":\"" + orderId + "\"}";
+    /**
+     * The message body for a newly created order.
+     *
+     * <p>Built here and stored in the outbox so a retry sends the identical bytes rather than
+     * re-deriving them from an order that may have moved on since.
+     */
+    public static String orderCreatedPayload(String orderId) {
+        return "{\"orderId\":\"" + orderId + "\"}";
+    }
+
+    /** Sends an already-built payload. Throws on failure; the caller decides what that means. */
+    public void send(String payload) {
         sqsClient.sendMessage(SendMessageRequest.builder()
             .queueUrl(fulfillmentQueueUrl)
-            .messageBody(body)
+            .messageBody(payload)
             .build());
-        log.info("Published order to fulfillment queue orderId={}", orderId);
+        log.info("Published to fulfillment queue: {}", payload);
     }
 }

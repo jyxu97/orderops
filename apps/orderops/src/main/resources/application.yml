@@ -9,6 +9,7 @@ dynamodb:
 
 tables:
   orders:    ${ORDER_TABLE_NAME:Orders}
+  outbox:    ${OUTBOX_TABLE_NAME:OrderOutbox}
   inventory: ${INVENTORY_TABLE_NAME:Inventory}
   idempotency: ${IDEMPOTENCY_TABLE_NAME:IdempotencyRecords}
   audit:     ${AUDIT_TABLE_NAME:OrderAuditLogs}
@@ -28,6 +29,12 @@ realtime:
   redis-bridge:
     # The API subscribes to the Redis order-event channel to fan events out over WebSocket.
     enabled: ${REALTIME_REDIS_BRIDGE_ENABLED:true}
+
+outbox:
+  # How often to look for fulfillment messages that checkout committed but could not enqueue.
+  # Normally finds nothing: a successful inline send deletes the record.
+  poll-interval-ms: ${OUTBOX_POLL_INTERVAL_MS:15000}
+  batch-size: ${OUTBOX_BATCH_SIZE:25}
 
 ops:
   queue-health:

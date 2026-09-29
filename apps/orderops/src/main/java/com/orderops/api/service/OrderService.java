@@ -13,6 +13,7 @@ import com.orderops.api.repository.AuditLogRepository;
 import com.orderops.api.repository.IdempotencyRepository;
 import com.orderops.api.repository.InventoryRepository;
 import com.orderops.api.repository.OrderRepository;
+import com.orderops.api.repository.OutboxRepository;
 import com.orderops.realtime.OrderEventPublisher;
 import com.orderops.shared.event.OrderStatusEvent;
 import com.orderops.shared.exception.InvalidStateTransitionException;
@@ -20,6 +21,7 @@ import com.orderops.shared.model.IdempotencyRecord;
 import com.orderops.shared.model.Inventory;
 import com.orderops.shared.model.Order;
 import com.orderops.shared.model.OrderAuditLog;
+import com.orderops.shared.model.OutboxRecord;
 import com.orderops.shared.model.Page;
 import com.orderops.shared.state.OrderStateMachine;
 import com.orderops.shared.state.OrderStatus;
@@ -56,6 +58,7 @@ public class OrderService {
     private final AuditLogRepository auditLogRepository;
     private final OrderStateMachine stateMachine;
     private final IdempotencyService idempotencyService;
+    private final OutboxRepository outboxRepository;
     private final SqsPublisher sqsPublisher;
     private final OrderEventPublisher eventPublisher;
     private final MeterRegistry meterRegistry;
@@ -142,11 +145,12 @@ public class OrderService {
             .updatedAt(now)
             .build();
 
-        // 5. Assemble TransactWriteItems:
-        //    positions [0 .. N-1] = inventory reserves (one per line item)
-        //    position  [N]        = order put
-        //    position  [N+1]      = idempotency put (only when key is present)
+        // 5. Assemble TransactWriteItems. Positions are recorded as the list is built rather
+        //    than derived arithmetically afterwards: a cancellation reason is matched to its
+        //    action by index, and the old `idemIdx = n + 1` only held while the idempotency put
+        //    happened to be last. It is now neither last nor always present.
         List<TransactWriteItem> transactItems = new ArrayList<>();
+        int idempotencyIndex = -1;
 
         for (CreateOrderRequest.OrderItemDto item : request.getItems()) {
             transactItems.add(inventoryRepository.buildReserveTransactItem(item.getItemId(), item.getQuantity()));
@@ -165,8 +169,21 @@ public class OrderService {
                 .totalAmount(totalAmount)
                 .createdAt(now)
                 .build();
+            idempotencyIndex = transactItems.size();
             transactItems.add(idempotencyRepository.buildSaveTransactItem(record));
         }
+
+        //    The obligation to enqueue this order for fulfillment, committed with the order
+        //    itself. Without it the send is a separate call after the transaction, so a failure
+        //    there leaves an order holding stock that nothing will ever fulfill — and an
+        //    idempotent retry returns that same order without enqueueing it either, turning the
+        //    fault into a silent success.
+        String messagePayload = SqsPublisher.orderCreatedPayload(orderId);
+        transactItems.add(outboxRepository.buildSaveTransactItem(OutboxRecord.builder()
+            .orderId(orderId)
+            .payload(messagePayload)
+            .createdAt(now)
+            .build()));
 
         // 6. Execute transaction — DynamoDB guarantees all-or-nothing
         try {
@@ -185,10 +202,9 @@ public class OrderService {
             // "Already processed" has to win: the order exists and is holding that stock, so
             // reporting insufficient inventory would tell the client its order failed while the
             // order sits committed in DynamoDB.
-            int idemIdx = n + 1;
-            if (hasIdempotencyKey
-                    && idemIdx < reasons.size()
-                    && CONDITIONAL_CHECK_FAILED.equals(reasons.get(idemIdx).code())) {
+            if (idempotencyIndex >= 0
+                    && idempotencyIndex < reasons.size()
+                    && CONDITIONAL_CHECK_FAILED.equals(reasons.get(idempotencyIndex).code())) {
                 log.info("Idempotency key {} already used, returning the original order", idempotencyKey);
                 meterRegistry.counter("orders.idempotent_replay").increment();
                 return idempotencyService.resolveDuplicate(idempotencyKey, requestHash);
@@ -238,8 +254,19 @@ public class OrderService {
             orderId, request.getCustomerId(),
             OrderStatus.CREATED, OrderStatus.INVENTORY_RESERVED, "Order created"));
 
-        // 10. Publish to SQS for async fulfillment
-        sqsPublisher.publishOrderCreated(orderId);
+        // 10. Enqueue for fulfillment, then clear the outbox obligation. Sending inline keeps
+        //     the normal path's latency unchanged; the outbox record is what makes the send
+        //     recoverable rather than best-effort. A failure here is logged and left for
+        //     OutboxPublisher — the order is committed and its stock is held, so answering the
+        //     client with an error would be less accurate than telling them it was created.
+        try {
+            sqsPublisher.send(messagePayload);
+            outboxRepository.markSent(orderId);
+        } catch (RuntimeException e) {
+            meterRegistry.counter("orders.enqueue_deferred").increment();
+            log.warn("Could not enqueue order {} inline ({}); it stays in the outbox for retry",
+                orderId, e.getMessage());
+        }
 
         return response;
     }
